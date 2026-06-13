@@ -1,0 +1,5 @@
+{
+  "notion_token": "secret_xxx",
+  "completion_database_id": null,
+  "schedule_view_url": "https://www.notion.so/<database_id>?v=<view_id>"
+}

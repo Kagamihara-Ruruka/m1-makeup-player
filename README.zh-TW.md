@@ -1,0 +1,344 @@
+# m_1 Notion 補課播放器
+
+私人補課平台的本地播放器原型。Notion 是課程清單來源，本地程式負責播放、字幕提示、進度暫存與回寫事件排隊。
+
+## 原則
+
+- Notion 是課程與影片清單的來源。
+- 啟動時自動同步 Notion 課程安排，不把影片列表寫死在本地。
+- 播放影片時優先使用 Notion 影片來源進行串流，不下載整支影片到本機。
+- 本地只保存字幕、小型同步 cache、播放進度與回寫 outbox。
+- 不使用 WebView 播放 Notion 頁面。
+- UI 只是外殼，不直接理解 Notion MCP 細節。
+
+## 模組邊界
+
+```text
+m1_player/config.py
+  路徑、Notion view URL、cache 位置與完成門檻。
+
+m1_player/notion_mcp.py
+  Notion MCP 子程序與工具呼叫邊界。包含 request timeout 與 Windows 子程序樹清理，避免外部握手卡死後留下 node 殘骸。
+
+m1_player/notion_api.py
+  官方 Notion REST API 同步路徑。有 token 時用 data source query 與 block children 直接同步課程頁與影片 block。
+
+m1_player/attachment_resolver.py
+  可插拔的 Notion 附件 URL 解析器。若有 `M1_NOTION_TOKEN` 或 `NOTION_TOKEN`，會嘗試用官方 API 解析附件 URL。
+
+m1_player/local_settings.py
+  本地 secret 設定讀取。預設讀 `state/local_settings.json`，此目錄不應進 repo。
+
+m1_player/runtime_config.py
+  將預設值、環境變數與本地設定合成啟動用 AppConfig。UI 與 CLI 不直接判斷設定優先序。
+
+m1_player/settings_status.py
+  彙整 token、預計同步後端、上次實際同步 metadata、附件解析、回寫模式、cache 與下一步提示。CLI、UI 或守護進程應共用這個模型，不各自重寫設定判斷。
+
+m1_player/settings_actions.py
+  保存 Notion token、補課完成紀錄 data source 與課程安排 view URL。CLI 與 UI 共用這層，避免 secret 與設定保存規則散在不同入口。
+
+m1_player/mvp_readiness.py
+  將 mpv、課程 cache、來源形狀、字幕、Notion token、完成回寫 data source 與 outbox 收束成 MVP readiness gates。它是總儀表，不取代各子模組的細部檢查。
+
+m1_player/readiness_summary.py
+  將 readiness gates 轉成 UI 可顯示的摘要文字。UI 不直接拼接 gate 規則，避免設定狀態判斷散落在視窗程式裡。
+
+m1_player/setup_guide.py
+  將目前設定狀態轉成可複製的外部設定命令清單。它只產生命令與說明，不寫 token、不呼叫 Notion、不啟動播放。
+
+m1_player/resolved_url_cache.py
+  保存短效可播放 URL 與到期時間。只保存 metadata，不保存影片本體。
+
+m1_player/notion_parser.py
+  將 Notion fetch 文字轉成 CoursePageRef 與 VideoSegment。
+
+m1_player/playback.py
+  mpv JSON IPC 播放核心。若找不到 `mpv.exe`，會回報缺依賴而不是假裝播放。
+
+m1_player/playability.py
+  將影片來源、Notion 附件解析結果與播放核心狀態合成可播放性判斷。UI 只消費結果，不在選片流程內散落來源判斷。這裡也是 mpv 前最後一道串流 gate，非 http/https URL 不會送進播放核心。
+
+m1_player/video_detail_summary.py
+  將選中影片的來源解析、播放可行性、字幕、完成狀態與進度轉成 UI 可讀摘要。它只負責狀態呈現，不決定播放或同步行為。
+
+m1_player/subtitle_readiness.py
+  靜態檢查每段影片是否能找到本地字幕檔與 cues。字幕缺失會列為 readiness warning，不阻擋播放核心。
+
+m1_player/subtitle_manifest.py
+  依本地 progress cache 產生字幕 sidecar manifest，列出每段影片建議使用的 `.md`、`.srt`、`.vtt` 路徑；必要時可產生 timestamped Markdown 佔位檔。
+
+m1_player/preflight.py
+  啟動前本地診斷，檢查 mpv、Notion token、cache、影片來源、字幕與 outbox。
+
+m1_player/sync_service.py
+  啟動同步服務，查 Notion database view，更新本地 ProgressStore。
+
+m1_player/progress.py
+  本地播放狀態 cache。Notion 重新同步時只刷新影片 metadata，不覆蓋播放秒數、完成時間、完成狀態或字幕路徑；同步完成後會記錄 backend、時間、頁數與影片數，供啟動診斷使用。
+
+m1_player/progress_overview.py
+  將所有 PlaybackRecord 收束成補課總覽，包含總影片數、各狀態數量、平均進度、完成率與待回寫完成紀錄數。UI 與 CLI 共用這個模型，不各自計算。
+
+m1_player/subtitle.py
+  SRT、VTT、timestamped Markdown parser 與目前字幕 cue 判定。
+
+m1_player/subtitle_lint.py
+  檢查本地字幕 sidecar 的時間軸、空白內容、重疊 cue 與過長段落。它是字幕來源進入播放器前的格式守門，不負責語音轉文字。
+
+m1_player/subtitle_resolver.py
+  依影片 stable_key 或檔名尋找本地字幕。
+
+m1_player/writeback.py
+  將完成事件寫入 outbox。正式 Notion 補課紀錄資料庫尚未建立前，不直接寫 Notion。
+
+m1_player/writeback_summary.py
+  將 outbox 轉成 UI/CLI 可讀摘要，讓完成回寫狀態不只是一個數字。
+
+m1_player/completion.py
+  管理完成狀態與 outbox 排隊規則，避免已完成影片重複產生完成回寫事件。
+
+m1_player/writeback_schema.py
+  將 PlaybackRecord 轉成未來 Notion 補課紀錄資料庫的 property map。
+
+m1_player/writeback_sink.py
+  將完成 outbox 寫入 Notion 補課紀錄 data source。預設由 CLI dry-run，只有明確 `--apply` 才送出。
+
+m1_player/writeback_schema_check.py
+  檢查補課紀錄 data source 欄位是否能承接完成事件，並提供可輸出的 data source 欄位模板。它只檢查 schema，不建立頁面。
+
+m1_player/video_source.py
+  判斷影片來源是否為可播放 URL。Notion 內部附件標記會被明確標成需要 resolver。
+
+m1_player/streaming_policy.py
+  靜態檢查影片來源與短效 URL cache 是否仍符合串流優先邊界。允許 http/https 與 Notion attachment resolver，不允許本地影片路徑進入播放來源或短效 URL cache。
+
+m1_player/source_readiness.py
+  靜態檢查目前 cache 內的影片來源是否具備未來 token 解析所需形狀。它不呼叫 Notion、不下載、不播放，只確認來源是否可直接播放或具備 permission block id。
+
+m1_player/app_qt.py
+  PySide6 UI。它只控制同步、字幕、進度、回寫調度與 mpv 播放核心，不直接理解 Notion MCP 或 Notion API 細節。字幕區分為當前提詞大字區與可雙擊跳轉的字幕列表；選中影片會顯示來源解析、播放可行性、字幕與進度摘要。
+```
+
+這個拆法的目標是避免大泥球。新增功能時，先判斷它屬於同步、播放、字幕、進度、回寫，還是 UI 外殼，不要把跨層邏輯塞進 UI。
+
+## 資料模型
+
+Notion 課程安排 database：
+
+```text
+名稱 title
+日期 date
+標籤 multi_select
+```
+
+每個課程頁可能包含多個 video block。播放器將一個 video block 視為一段補課影片。
+
+未來補課紀錄 database 建議欄位：
+
+```text
+影片名稱 title
+課程頁 URL url
+課程日期 date
+段落序號 number
+影片 block id rich_text
+影片來源 rich_text
+最後播放秒數 number
+影片總長秒數 number
+進度百分比 number
+補課狀態 select
+完整補課時間 date
+最後更新時間 date
+字幕路徑 rich_text
+```
+
+目前不直接建立這個 database。播放器先把完成事件排入 `state/notion_writeback_outbox.jsonl`；若設定 token 與補課紀錄 data source id，可用 UI 的「送出完成紀錄」或 `flush_writeback.py --apply` 透過官方 Notion API 建立完成紀錄。
+
+## 啟動
+
+```powershell
+$env:PYTHONUTF8='1'
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\settings_status.py
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\setup_guide.py
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\preflight.py
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\run_ui.py
+```
+
+設定 Notion API token：
+
+```powershell
+$env:PYTHONUTF8='1'
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\set_token.py
+```
+
+token 會寫入 `state/local_settings.json`。也可以改用環境變數 `M1_NOTION_TOKEN` 或 `NOTION_TOKEN`。
+
+有 token 時，啟動同步會優先走官方 Notion API。沒有 token 時才使用 Notion MCP fallback；MCP 可能需要瀏覽器登入狀態，也可能因外部握手卡住而 timeout。
+
+同步成功時，UI 事件欄與 `scan_schedule.py` 會標出 `sync_backend`，用來區分 `official_notion_api` 與 `notion_mcp_fallback`。本地 cache 也會保存上次同步的 backend、時間、課程頁數與影片段數；`settings_status.py` 與 readiness 會讀取這份 metadata，不再只憑目前 token 狀態推測。
+
+設定課程安排 database view：
+
+```powershell
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\set_schedule_url.py "<notion_schedule_database_view_url>"
+```
+
+也可以用環境變數 `M1_SCHEDULE_VIEW_URL` 暫時覆蓋。優先序是：環境變數、本地 `state/local_settings.json`、程式預設 view URL。
+
+設定補課紀錄 data source：
+
+```powershell
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\bootstrap_completion_database.py --parent-from-schedule --apply --save
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\set_completion_database.py "<data_source_id_or_notion_url>"
+```
+
+第一條命令會在課程安排資料庫的同一個父頁下建立 `m_1 補課完成紀錄`，並把建立出的 data source id 寫入 `state/local_settings.json`。它需要 Notion token 具備 insert content 權限，且 integration 已被分享進該父頁。若只想檢查將送出的 payload，先拿掉 `--apply --save`。
+
+這裡可填 Notion data source id、database id 或 Notion URL。工具會先抽取 32 字元 Notion id 後保存；若輸入的是 database id，送出完成紀錄時會嘗試讀取第一個 child data source，但多 data source 的資料庫仍建議明確指定。
+
+送出完成紀錄前，先檢查補課紀錄 data source schema：
+
+```powershell
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\check_writeback_schema.py
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\writeback_apply_smoke.py --json
+D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\writeback_apply_smoke.py --apply --json
+```
+
+這個檢查會讀取補課紀錄 data source 的 properties，確認 `影片名稱`、`課程頁 URL`、`段落序號`、`最後播放秒數`、`進度百分比`、`補課狀態`、`最後更新時間` 等必要欄位型別正確。缺 token 或缺 data source 時只回報 `not_applicable`，不會寫入 Notion。
+
+`writeback_apply_smoke.py --apply` 會建立一筆 synthetic 完成紀錄，成功後預設立刻用 Notion `in_trash` 收進垃圾桶，避免測試列留在補課完成紀錄庫。若要保留測試列，可加 `--keep`。
+
+啟動後會自動同步 Notion 課程安排。左側是補課總覽、課程影片列表、重新同步與重新檢查按鈕，右側是播放器、控制列、字幕提詞與事件紀錄。控制列包含「標記完成」與「送出完成紀錄」；前者只排入本地 outbox，後者才嘗試把 outbox 送到 Notion。「待送出完成紀錄」顯示的是本地 outbox 筆數，不代表已寫入 Notion。
+
+「重新檢查」會同時寫入 preflight 與 MVP readiness gates 到事件紀錄。若 Notion token 或完成紀錄 data source 尚未設定，UI 會顯示外部設定未完成，而不是把它當成本地播放核心錯誤。若本地字幕尚未準備，readiness 會列為字幕 warning，影片播放仍可繼續。
+
+左側的「設定 token」、「設定完成庫」與「設定課表」會寫入本地 `state/local_settings.json`。token 輸入框使用密碼模式，事件紀錄只顯示保存位置，不會列印 token 內容。設定保存後會立刻更新本次 UI session 的 resolver、readiness、writeback sink 與課表同步 URL，不需要重開播放器才生效。
+
+`setup_guide.py` 與 UI readiness 區會列出可複製命令，用來完成 token、補課紀錄 data source、schema 檢查、同步試跑、影片來源解析與 UI 啟動。它只是一張操作清單，不會自動送出 secret。
+
+「建立字幕佔位」會替目前選取的影片建立一個 timestamped Markdown sidecar，預設內容只有第一條 `待補字幕` cue。若同一段影片已經有 `.md`、`.srt` 或 `.vtt`，UI 不會覆寫既有字幕檔。
+
+## 播放進度
+
+- 選取影片後，若本地 cache 有上次播放秒數，播放器會在 mpv 載入後自動跳回該位置。
+- 播放中每秒更新本地進度 cache，字幕提詞會依目前秒數高亮。
+- 左側補課總覽會顯示總影片數、完成數、補課中數、平均進度與待回寫完成紀錄數。
+- 影片接近完成門檻時會自動排入完成 outbox。
+- 也可以按「標記完成」手動排入完成 outbox，用於補登或播放器未能取得完整 duration 的情況。
+
+## 字幕
+
+本地字幕放在 `D:\RRKAL_tools\m1-makeup-player\subtitles\`，目前支援 `.srt`、`.vtt` 與 `.md`。播放器會依序嘗試：
+
+```text
+<stable_key with colon replaced by underscore>.srt
+<stable_key with colon replaced by underscore>.vtt
+<stable_key with colon replaced by underscore>.md
+<video filename stem>.srt
+<video filename stem>.vtt
+<video filename stem>.md
+```
+
+Markdown 逐字稿支援以下時間戳格式：
+
+```markdown
+[00:00:00] 開場說明
+[00:00:03 --> 00:00:05] 第二段說明
+
+00:00:05
+第三段第一行
+第三段第二行
+```
+
+若 Markdown 逐字稿沒有結束時間，播放器會用下一個時間戳作為結束；最後一條會使用短暫預設長度，讓字幕提詞 BOX 能跟著播放進度高亮。
+
+可用檢查工具列出每段影片目前是否找到字幕，以及候選檔名：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_subtitles.py --show-candidates
+```
+
+可用 lint 工具檢查已存在的 sidecar 字幕是否有時間重疊、空白字幕、非法時間範圍，或過長段落。這個檢查只處理本地字幕檔，不會讀取或修改 Notion：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --strict
+```
+
+字幕仍維持本地 sidecar，不直接上傳 Notion；未來若接語音轉文字，輸出也先落成 `.md`、`.srt` 或 `.vtt` 後再讓 lint 檢查。
+
+## 目前已知播放邊界
+
+Notion MCP 目前回傳的影片來源是 `file://{source: attachment...}` 內部附件標記，不是可直接交給播放器的 `https` 簽名 URL。程式已把這種來源分類為 `notion_attachment_marker`，UI 會顯示需要 resolver，不會假裝能播放。
+
+真正串流 Notion 影片時，附件 URL resolver 會取得可播放 URL。現在已保留 `NotionAttachmentResolver`，若提供 `M1_NOTION_TOKEN` 或 `NOTION_TOKEN`，它會嘗試用官方 API 解析 block file URL。若沒有 token，會回報 `missing_token`。Notion file URL 是短效簽名 URL，不應長期寫死進 cache，播放前需要按需刷新。
+
+UI 透過 `m1_player/playability.py` 顯示可播放性狀態。它會區分缺 Notion token、resolver 失敗、mpv 不可用、非串流 URL 與來源格式不支援，不把這些狀態混成同一個播放失敗訊息。即使 resolver 錯誤回傳本地檔案路徑，playability 也會擋下，不會交給 mpv。
+
+`state/resolved_url_cache.json` 只保存短效 URL、到期時間與來源 hash，不保存影片本體。URL 快過期時會被視為不可用，避免 mpv 拿到快失效的串流來源。
+
+Notion 附件實際落在 S3 短效 URL 上，HTTP `HEAD` 可能回 403，但 `Range` 串流可正常讀取。mpv 首次載入大型 Notion MP4 時可能需要約 10 秒完成 demux，UI 在這段時間可能尚未取得 duration 或 position；這不是下載整支影片，也不代表播放失敗。
+
+接 token 前可以先跑來源形狀檢查：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\audit_sources.py --strict
+```
+
+`ready_for_token_resolution` 代表目前 cache 內的 Notion attachment marker 已有 permission block id，等 token 設好後才進一步嘗試解析短效 URL。
+
+## 檢查
+
+```powershell
+$env:PYTHONUTF8='1'
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\smoke_test.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\ui_smoke_test.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\readiness.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\readiness.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\setup_guide.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\setup_guide.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\progress_overview.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\progress_overview.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\settings_status.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\settings_status.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\preflight.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\audit_sources.py --strict
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_streaming_policy.py --strict
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\set_schedule_url.py "<notion_schedule_database_view_url>"
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\set_token.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\scan_schedule.py --max-pages 5 --timeout-sec 45 --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_sources.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_subtitles.py --show-candidates
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\subtitle_manifest.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\subtitle_manifest.py --write-missing-md
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_playback.py --ipc-smoke
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\resolve_sources.py --show-reason
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\preview_writeback.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\writeback_schema_template.py --markdown --check
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\bootstrap_completion_database.py --parent-from-schedule --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\bootstrap_completion_database.py --parent-from-schedule --apply --save
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\writeback_schema_template.py --fixture-only --output D:\RRKAL_tools\m1-makeup-player\tmp\completion_data_source.template.json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_writeback_schema.py --fixture D:\RRKAL_tools\m1-makeup-player\tmp\completion_data_source.template.json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_writeback_schema.py
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\writeback_apply_smoke.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\flush_writeback.py
+```
+
+含中文欄位名稱的 JSON 請用腳本的 `--output` 寫檔，不要用 PowerShell `>` 或 pipe 串接，避免中文 key 在 shell 管線中被轉碼破壞。
+
+若已安裝 `mpv.exe`，可用任意可播放 URL 或本地影片測試播放核心：
+
+```powershell
+$env:M1_MPV_PATH='C:\path\to\mpv.exe'
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\play_url.py "https://example.com/video.mp4" --seconds 15
+```
+
+## 邊界
+
+- 不批次下載 Notion 影片本體。
+- 不把影片列表寫進本地固定配置。
+- 不在 UI 內直接查 Notion 或直接組 Notion API payload。
+- 不在 token 與補課紀錄 data source 未設定時假裝已回寫 Notion。
+- 不把字幕塞回 Notion，字幕先維持本地檔案。
