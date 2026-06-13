@@ -292,6 +292,14 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stab
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stable_key>" --model tiny --max-seconds 30 --subtitle-dir D:\RRKAL_tools\m1-makeup-player\tmp\subtitle_smoke --overwrite
 ```
 
+短段測試只能確認管線可用，不應拿來估算 rolling-ahead 的 worker 數。5 到 15 秒窗格會把連線握手、遠端首包延遲、demux 初始化放大。要找甜蜜點，使用 profiling sweep：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\profile_subtitle_windows.py --key "<stable_key>" --windows 15,30,60,120 --model tiny
+```
+
+這個工具不寫 sidecar、不更新播放進度，只量測不同音訊窗格長度的 decode/inference ratio，並輸出建議 decode worker 數。rolling-ahead 的性能判準應以 60 到 180 秒級別窗格為主，5 秒只保留為 runtime smoke。
+
 替所有缺字幕影片批次生成字幕：
 
 ```powershell
@@ -349,6 +357,8 @@ recommended_decode_workers = ceil(decode_realtime_ratio * playback_rate * safety
 ```
 
 worker 數需設上下限與冷卻時間。當遠端解碼低於播放速度時降線，當遠端解碼追不上播放頭時升線；但不能無限制增加，避免 Notion 短效 URL 或遠端儲存端被並發請求打爆。GPU worker 預設維持 1 條，避免多個 Whisper 實例重複佔用 VRAM；CPU merge worker 也維持 1 條，負責 overlap 去重、時間戳排序與 sidecar 寫入。
+
+窗格任務數與 worker 並發數要分開理解。播放時間點 T 後方可以預排很多窗格任務，例如 10 到 15 個待解析窗格；但同時啟動的遠端 decode worker 應由 profiling ratio 動態控制，通常限制在 1 到 4 條。這樣可以保留足夠的預抓 horizon，又不會真的開 15 個無頭播放器、15 個遠端連線或 15 個 Whisper 模型實例。
 
 ## 目前已知播放邊界
 
