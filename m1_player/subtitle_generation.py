@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, Any
 
 from .models import PlaybackRecord
+from .subtitle_pipeline_planner import RollingPipelinePlan, plan_rolling_subtitle_pipeline
 from .subtitle import load_subtitle
 from .subtitle_resolver import safe_filename_stem
 
@@ -98,6 +99,7 @@ class SubtitleGenerationResult:
     compute_type: str | None = None
     decode_elapsed_sec: float | None = None
     inference_elapsed_sec: float | None = None
+    rolling_pipeline_plan: RollingPipelinePlan | None = None
 
     @property
     def ok(self) -> bool:
@@ -264,8 +266,22 @@ def generate_subtitle_sidecar(
             compute_type=compute_type,
             decode_elapsed_sec=transcription.decode_elapsed_sec,
             inference_elapsed_sec=transcription.inference_elapsed_sec,
+            rolling_pipeline_plan=build_rolling_pipeline_plan(options, transcription),
         )
     raise SubtitleGenerationError("; ".join(errors) or "transcription failed")
+
+
+def build_rolling_pipeline_plan(
+    options: SubtitleGenerationOptions,
+    transcription: TranscriptionRun,
+) -> RollingPipelinePlan | None:
+    if not options.max_duration_sec or options.max_duration_sec <= 0:
+        return None
+    return plan_rolling_subtitle_pipeline(
+        audio_window_sec=options.max_duration_sec,
+        decode_elapsed_sec=transcription.decode_elapsed_sec,
+        inference_elapsed_sec=transcription.inference_elapsed_sec,
+    )
 
 
 def transcribe_media(

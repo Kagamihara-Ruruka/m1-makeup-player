@@ -53,6 +53,7 @@ from m1_player.subtitle_generation import (  # noqa: E402
 )
 from m1_player.subtitle_lint import lint_cues, lint_subtitle_file  # noqa: E402
 from m1_player.subtitle_manifest import build_subtitle_manifest, write_missing_markdown_placeholders  # noqa: E402
+from m1_player.subtitle_pipeline_planner import plan_rolling_subtitle_pipeline  # noqa: E402
 from m1_player.subtitle_resolver import SubtitleResolver, safe_filename_stem  # noqa: E402
 from m1_player.video_source import parse_video_source  # noqa: E402
 from m1_player.writeback import WritebackOutbox  # noqa: E402
@@ -319,6 +320,22 @@ def main() -> int:
     assert isinstance(dependency_status.ready, bool)
     assert isinstance(dependency_status.cuda_runtime_available, bool)
     assert dependency_status.message
+    rolling_plan = plan_rolling_subtitle_pipeline(
+        audio_window_sec=5.0,
+        decode_elapsed_sec=9.4,
+        inference_elapsed_sec=1.3,
+    )
+    assert rolling_plan.recommended_decode_workers == 3
+    assert rolling_plan.recommended_gpu_workers == 1
+    assert rolling_plan.can_keep_up
+    saturated_plan = plan_rolling_subtitle_pipeline(
+        audio_window_sec=5.0,
+        decode_elapsed_sec=30.0,
+        inference_elapsed_sec=1.3,
+        max_decode_workers=4,
+    )
+    assert saturated_plan.recommended_decode_workers == 4
+    assert not saturated_plan.can_keep_up
     wav_path = tmp_dir / "subtitle_decode_probe.wav"
     write_probe_wav(wav_path, duration_sec=2.0)
     decoded_probe = decode_audio_window(str(wav_path), max_duration_sec=0.5)

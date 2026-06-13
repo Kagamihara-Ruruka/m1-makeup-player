@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,6 +153,8 @@ def main() -> int:
             "compute_type": result.compute_type,
             "message": result.message,
         }
+        if result.rolling_pipeline_plan:
+            payload["rolling_pipeline_plan"] = asdict(result.rolling_pipeline_plan)
         payloads.append(payload)
         print_status(payload, args.json)
 
@@ -202,6 +205,13 @@ def print_status(payload: dict[str, object], as_json: bool) -> None:
             f"inference={payload.get('inference_elapsed_sec')}s "
             f"device={payload.get('device')}/{payload.get('compute_type')}"
         )
+        plan = payload.get("rolling_pipeline_plan")
+        if isinstance(plan, dict):
+            message += (
+                f" decode_workers={plan.get('recommended_decode_workers')} "
+                f"capacity={plan.get('expected_pipeline_capacity_ratio')}x "
+                f"keep_up={plan.get('can_keep_up')}"
+            )
     print(f"{status} {name} {message}")
 
 
