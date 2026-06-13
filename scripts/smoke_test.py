@@ -64,6 +64,7 @@ from m1_player.writeback_schema_check import (  # noqa: E402
     result_to_payload,
 )
 from m1_player.writeback_sink import CompletionWritebackSink, flush_outbox  # noqa: E402
+from scripts.profile_decode_concurrency import choose_decode_concurrency  # noqa: E402
 
 
 SAMPLE_PAGE = """
@@ -336,6 +337,18 @@ def main() -> int:
     )
     assert saturated_plan.recommended_decode_workers == 4
     assert not saturated_plan.can_keep_up
+    concurrency_recommendations = choose_decode_concurrency(
+        [
+            {"window_sec": 30.0, "concurrency": 4, "failure_count": 0, "capacity_ratio": 8.48, "p95_decode_sec": 14.15},
+            {"window_sec": 60.0, "concurrency": 3, "failure_count": 0, "capacity_ratio": 11.59, "p95_decode_sec": 15.53},
+            {"window_sec": 120.0, "concurrency": 1, "failure_count": 0, "capacity_ratio": 11.03, "p95_decode_sec": 10.88},
+        ],
+        [8.0],
+        1.35,
+        max_overall_window_sec=60.0,
+    )
+    assert concurrency_recommendations[0]["overall"]["window_sec"] == 60.0
+    assert concurrency_recommendations[0]["overall"]["concurrency"] == 3
     wav_path = tmp_dir / "subtitle_decode_probe.wav"
     write_probe_wav(wav_path, duration_sec=2.0)
     decoded_probe = decode_audio_window(str(wav_path), max_duration_sec=0.5)

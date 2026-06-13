@@ -344,6 +344,7 @@ def transcribe_media_with_timing(
 def decode_audio_window(
     media_ref: str,
     max_duration_sec: float | None = None,
+    start_sec: float = 0.0,
     sample_rate: int = 16_000,
 ) -> Any:
     import av  # type: ignore[import-not-found]
@@ -354,6 +355,11 @@ def decode_audio_window(
         stream = next((item for item in container.streams if item.type == "audio"), None)
         if stream is None:
             raise SubtitleGenerationError("media has no audio stream")
+        if start_sec > 0:
+            try:
+                container.seek(int(start_sec * av.time_base), backward=True)
+            except Exception:
+                pass
         resampler = av.AudioResampler(format="s16", layout="mono", rate=sample_rate)
         chunks = []
         decoded_samples = 0
