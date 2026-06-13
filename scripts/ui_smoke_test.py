@@ -112,6 +112,7 @@ def main() -> int:
         assert window.play_button.text() == "播放 / 暫停"
         assert window.complete_button.text() == "標記完成"
         assert window.subtitle_placeholder_button.text() == "建立字幕佔位"
+        assert window.subtitle_generate_button.text() == "生成字幕"
         assert window.flush_writeback_button.text() == "送出完成紀錄"
         assert window.writeback_count_label.text() == "待送出完成紀錄：0"
         assert "完成回寫：乾跑模式" in window.writeback_summary_box.toPlainText()

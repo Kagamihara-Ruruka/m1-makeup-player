@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from dataclasses import replace
@@ -19,6 +20,13 @@ from .resolved_url_cache import ResolvedUrlCache
 from .runtime_config import load_app_config
 from .settings_actions import set_completion_data_source, set_notion_token, set_schedule_view_url
 from .subtitle import SubtitleCue, active_cue
+from .subtitle_generation import (
+    DEFAULT_INITIAL_PROMPT,
+    DEFAULT_TECHNICAL_HOTWORDS,
+    SubtitleGenerationOptions,
+    SubtitleGenerationResult,
+    generate_subtitle_sidecar,
+)
 from .subtitle_manifest import write_missing_markdown_placeholders
 from .subtitle_resolver import SubtitleResolver
 from .sync_service import NotionScheduleSync, SyncResult
@@ -91,6 +99,31 @@ class WritebackFlushWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class SubtitleGenerationWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        record: PlaybackRecord,
+        media_ref: str,
+        subtitle_dir: str,
+        options: SubtitleGenerationOptions,
+    ) -> None:
+        super().__init__()
+        self.record = record
+        self.media_ref = media_ref
+        self.subtitle_dir = subtitle_dir
+        self.options = options
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.finished.emit(generate_subtitle_sidecar(self.record, self.media_ref, self.subtitle_dir, self.options))
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports the failure.
+            self.failed.emit(str(exc))
+
+
 class M1MakeupPlayerWindow(QMainWindow):
     def __init__(
         self,
@@ -125,6 +158,8 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.sync_worker: SyncWorker | None = None
         self.writeback_thread: QThread | None = None
         self.writeback_worker: WritebackFlushWorker | None = None
+        self.subtitle_generation_thread: QThread | None = None
+        self.subtitle_generation_worker: SubtitleGenerationWorker | None = None
 
         self.setWindowTitle("m_1 Notion 補課播放器")
         self.resize(1280, 760)
@@ -146,6 +181,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.play_button = QPushButton("播放 / 暫停")
         self.complete_button = QPushButton("標記完成")
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
+        self.subtitle_generate_button = QPushButton("生成字幕")
         self.flush_writeback_button = QPushButton("送出完成紀錄")
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 0)
@@ -213,6 +249,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         controls_layout.addWidget(self.play_button)
         controls_layout.addWidget(self.complete_button)
         controls_layout.addWidget(self.subtitle_placeholder_button)
+        controls_layout.addWidget(self.subtitle_generate_button)
         controls_layout.addWidget(self.flush_writeback_button)
         controls_layout.addWidget(self.writeback_count_label)
         right_layout.addWidget(controls)
@@ -239,6 +276,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.play_button.clicked.connect(self.toggle_playback)
         self.complete_button.clicked.connect(self.mark_current_completed)
         self.subtitle_placeholder_button.clicked.connect(self.create_current_subtitle_placeholder)
+        self.subtitle_generate_button.clicked.connect(self.start_subtitle_generation)
         self.flush_writeback_button.clicked.connect(self.start_writeback_flush)
         self.position_slider.sliderMoved.connect(self.seek_to_slider)
         self.subtitle_box.itemDoubleClicked.connect(self.seek_to_subtitle_item)
@@ -539,6 +577,72 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.load_subtitles(self.current_record)
         self.refresh_detail_box()
 
+    def start_subtitle_generation(self) -> None:
+        if self.subtitle_generation_thread is not None:
+            self.log("subtitle generation skipped: already running")
+            return
+        if self.current_record is None:
+            self.log("subtitle generation skipped: no selected video")
+            return
+        if self.current_playability is None or not self.current_playability.can_play or not self.current_playability.playable_url:
+            self.log("subtitle generation skipped: no playable stream URL")
+            return
+        options = subtitle_generation_options_from_env()
+        self.status_label.setText("正在生成字幕，完成後會自動載入")
+        self.subtitle_generate_button.setEnabled(False)
+        self.log(
+            "subtitle generation started: "
+            f"model={options.model_size} language={options.language or 'auto'} "
+            f"device={options.device} batch={options.batch_size}"
+        )
+        self.subtitle_generation_thread = QThread()
+        self.subtitle_generation_worker = SubtitleGenerationWorker(
+            self.current_record,
+            self.current_playability.playable_url,
+            str(self.config.subtitle_dir),
+            options,
+        )
+        self.subtitle_generation_worker.moveToThread(self.subtitle_generation_thread)
+        self.subtitle_generation_thread.started.connect(self.subtitle_generation_worker.run)
+        self.subtitle_generation_worker.finished.connect(self.on_subtitle_generation_finished)
+        self.subtitle_generation_worker.failed.connect(self.on_subtitle_generation_failed)
+        self.subtitle_generation_worker.finished.connect(self.subtitle_generation_thread.quit)
+        self.subtitle_generation_worker.failed.connect(self.subtitle_generation_thread.quit)
+        self.subtitle_generation_thread.finished.connect(self.cleanup_subtitle_generation_worker)
+        self.subtitle_generation_thread.start()
+
+    @Slot(object)
+    def on_subtitle_generation_finished(self, result: SubtitleGenerationResult) -> None:
+        self.log(
+            "subtitle generation "
+            f"{result.status}: cues={result.cue_count} elapsed={result.elapsed_sec}s "
+            f"decode={result.decode_elapsed_sec}s inference={result.inference_elapsed_sec}s "
+            f"device={result.device}/{result.compute_type} "
+            f"path={result.subtitle_path or 'missing'}"
+        )
+        if self.current_record and self.current_record.stable_key == result.record_key:
+            if result.subtitle_path:
+                self.current_record.subtitle_path = result.subtitle_path
+                self.store.records[self.current_record.stable_key] = self.current_record
+                self.store.save()
+            self.load_subtitles(self.current_record)
+            self.refresh_detail_box()
+            self.status_label.setText("字幕已生成並載入")
+        else:
+            self.status_label.setText("字幕已生成，重新選取影片後載入")
+        self.run_mvp_readiness()
+
+    @Slot(str)
+    def on_subtitle_generation_failed(self, message: str) -> None:
+        self.status_label.setText("字幕生成失敗，請看事件欄")
+        self.log(f"subtitle generation failed: {message}")
+
+    @Slot()
+    def cleanup_subtitle_generation_worker(self) -> None:
+        self.subtitle_generate_button.setEnabled(True)
+        self.subtitle_generation_thread = None
+        self.subtitle_generation_worker = None
+
     def toggle_playback(self) -> None:
         if self.current_record is None or not self.playback_core.available():
             return
@@ -684,6 +788,31 @@ def writeback_status_text(result: FlushResult) -> str:
 
 def writeback_count_text(count: int) -> str:
     return f"待送出完成紀錄：{count}"
+
+
+def subtitle_generation_options_from_env() -> SubtitleGenerationOptions:
+    batch_size = _positive_int(os.environ.get("M1_WHISPER_BATCH_SIZE"), 8)
+    beam_size = _positive_int(os.environ.get("M1_WHISPER_BEAM_SIZE"), 5)
+    language = os.environ.get("M1_WHISPER_LANGUAGE", "zh").strip() or None
+    return SubtitleGenerationOptions(
+        model_size=os.environ.get("M1_WHISPER_MODEL", "medium").strip() or "medium",
+        language=language,
+        device=os.environ.get("M1_WHISPER_DEVICE", "auto").strip() or "auto",
+        compute_type=os.environ.get("M1_WHISPER_COMPUTE_TYPE", "auto").strip() or "auto",
+        batch_size=batch_size,
+        beam_size=beam_size,
+        overwrite=os.environ.get("M1_WHISPER_OVERWRITE", "").strip().lower() in {"1", "true", "yes"},
+        output_suffix=os.environ.get("M1_WHISPER_OUTPUT_FORMAT", ".srt").strip() or ".srt",
+        initial_prompt=os.environ.get("M1_WHISPER_INITIAL_PROMPT", DEFAULT_INITIAL_PROMPT).strip() or None,
+        hotwords=os.environ.get("M1_WHISPER_HOTWORDS", DEFAULT_TECHNICAL_HOTWORDS).strip() or None,
+    )
+
+
+def _positive_int(value: str | None, default: int) -> int:
+    try:
+        return max(1, int(str(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 def run_app(config: AppConfig | None = None) -> int:

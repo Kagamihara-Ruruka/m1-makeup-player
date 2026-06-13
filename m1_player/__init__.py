@@ -10,5 +10,6 @@ __all__ = [
     "progress_overview",
     "settings_actions",
     "subtitle",
+    "subtitle_generation",
     "subtitle_lint",
 ]

@@ -266,7 +266,77 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --json
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --strict
 ```
 
-字幕仍維持本地 sidecar，不直接上傳 Notion；未來若接語音轉文字，輸出也先落成 `.md`、`.srt` 或 `.vtt` 後再讓 lint 檢查。
+字幕仍維持本地 sidecar，不直接上傳 Notion；語音轉文字也先落成 `.md`、`.srt` 或 `.vtt` 後再讓 lint 檢查。
+
+### 自動生成字幕
+
+播放器支援對沒有字幕的 Notion 串流影片生成本地 sidecar 字幕。影片本體仍透過 Notion 短效 URL 串流，不把整支影片長期下載到本機。生成流程會把可播放 URL 交給 `faster-whisper`，輸出預設是 `.srt`，之後播放器會自動依既有 sidecar 規則載入。
+
+預設語言是中文 `zh`，模型是 `medium`，並帶有計算機科學技術詞提示，避免 K8、資料庫、網路、設計模式等課程中的專有名詞被隨機音譯或誤翻。預設運行策略會先檢查 CUDA runtime；若找到 `cublas64_12.dll`，才使用 GPU `cuda/float16`，否則直接使用 CPU `int8`，避免每次都浪費時間嘗試不可用的 GPU 後端。批次大小預設為 8，用來避免一小時影片也要等一小時才得到字幕。
+
+檢查字幕生成依賴：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --check-deps
+```
+
+替目前 cache 內某支影片生成字幕：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stable_key>"
+```
+
+只做短段煙霧測試時，可限制只解析前 30 秒：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stable_key>" --model tiny --max-seconds 30 --subtitle-dir D:\RRKAL_tools\m1-makeup-player\tmp\subtitle_smoke --overwrite
+```
+
+替所有缺字幕影片批次生成字幕：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --all
+```
+
+可用環境變數調整轉錄設定：
+
+```powershell
+$env:M1_WHISPER_MODEL='medium'
+$env:M1_WHISPER_LANGUAGE='zh'
+$env:M1_WHISPER_DEVICE='cuda'
+$env:M1_WHISPER_COMPUTE_TYPE='float16'
+$env:M1_WHISPER_BATCH_SIZE='8'
+$env:M1_WHISPER_HOTWORDS='Kubernetes, K8S, SQL, MySQL, TCP, HTTP, Docker, Linux, design pattern'
+```
+
+### CUDA 修復檢查點
+
+這個播放器的字幕生成以 GPU 優先設計。若 `generate_subtitles.py --check-deps` 顯示 `cuda_runtime_available: false`，代表 NVIDIA 驅動能看到顯卡，但 Python 推理後端缺少 CUDA/cuBLAS/cuDNN runtime。此時 `auto` 會降級到 CPU，避免每次嘗試 CUDA 都浪費時間；但 CPU 只能作短片段煙測、補破洞或失敗 fallback，不能當作長課程 rolling subtitle 的主解析頭。
+
+官方 `faster-whisper` 1.2.1 的 GPU 路線需要：
+
+- CUDA 12 系列的 cuBLAS。
+- CUDA 12 系列的 cuDNN 9。
+- 包含 `cublas64_12.dll` 的資料夾必須在 PATH 中，或由啟動腳本注入 PATH。
+
+若不想改全機 PATH，可用 `M1_CUDA_RUNTIME_DIRS` 指向含有 `cublas64_12.dll` 的資料夾；多個資料夾用 Windows 的分號分隔。程式啟動時會用 `os.add_dll_directory` 注入目前 Python 行程。
+
+```powershell
+$env:M1_CUDA_RUNTIME_DIRS='D:\path\to\cuda-runtime-bin'
+```
+
+修復後用下列命令驗證：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --check-deps
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stable_key>" --model tiny --max-seconds 5 --device cuda --compute-type float16 --subtitle-dir D:\RRKAL_tools\m1-makeup-player\tmp\subtitle_cuda_probe --overwrite --json
+```
+
+第一條應顯示 `cuda_runtime_available: true`，第二條應回報 `device: cuda` 與 `compute_type: float16`。若仍出現 `cublas64_12.dll is not found or cannot be loaded`，代表 PATH 或 CUDA/cuDNN 版本仍未對齊。
+
+UI 內的「生成字幕」按鈕會針對目前選取影片開背景 worker，完成後自動重載本地 sidecar。後續可以把同一個 generator 升級為 rolling-ahead 模式：播放到時間點 T 時，GPU 先吃 T 後方數分鐘音訊窗，持續把 partial cues merge 回 sidecar；目前版本先採完整 sidecar 快取作為穩定基線。
+
+rolling-ahead 模式的分工應維持 GPU 主解析、CPU 降級與合併。CPU 適合做遠端音訊解碼、窗格排程、overlap 去重、sidecar 合併與失敗 fallback；GPU 才適合作為追播放時間線的主轉錄頭。若只用 CPU 追即時播放，長課程很容易被播放速度超車。NPU 暫不放進主線，因為目前這條 `faster-whisper` 管線直接支援的是 CPU/CUDA，去重這類結構化任務也不值得搬到 NPU。
 
 ## 目前已知播放邊界
 
@@ -313,6 +383,7 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_subtitles.py --show-candidat
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\subtitle_manifest.py
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\subtitle_manifest.py --write-missing-md
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\lint_subtitles.py --json
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --check-deps
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\check_playback.py --ipc-smoke
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\resolve_sources.py --show-reason
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\preview_writeback.py

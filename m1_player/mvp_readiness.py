@@ -15,6 +15,7 @@ from .streaming_policy import (
     streaming_policy_passes,
     summarize_streaming_policy,
 )
+from .subtitle_generation import subtitle_generation_dependency_status
 from .subtitle_readiness import audit_subtitle_readiness, subtitle_readiness_passes, summarize_subtitle_readiness
 
 
@@ -84,6 +85,7 @@ def collect_mvp_readiness(config: AppConfig, local_settings_path: str | Path | N
     streaming_source_rows = audit_streaming_sources(records)
     streaming_cache_rows = audit_resolved_url_cache(ResolvedUrlCache(config.resolved_url_cache))
     streaming_summary = summarize_streaming_policy(streaming_source_rows, streaming_cache_rows)
+    subtitle_generation = subtitle_generation_dependency_status()
     mpv = find_mpv()
     schedule_message = _schedule_cache_message(len(records), store.metadata.to_json())
 
@@ -117,6 +119,12 @@ def collect_mvp_readiness(config: AppConfig, local_settings_path: str | Path | N
             "pass" if subtitle_readiness_passes(subtitle_rows) else "warning",
             "subtitle_prompt_box",
             f"subtitle readiness: {subtitle_summary}",
+        ),
+        _gate(
+            "subtitle_generator",
+            "pass" if subtitle_generation.ready else "warning",
+            "subtitle_transcription_cache",
+            subtitle_generation.message,
         ),
         _gate(
             "notion_token",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,6 +39,18 @@ from m1_player.source_readiness import audit_source_readiness, source_readiness_
 from m1_player.streaming_policy import audit_streaming_sources, streaming_policy_passes  # noqa: E402
 from m1_player.sync_service import NotionScheduleSync  # noqa: E402
 from m1_player.subtitle import active_cue, parse_markdown_transcript, parse_srt_or_vtt  # noqa: E402
+from m1_player.subtitle_generation import (  # noqa: E402
+    GeneratedSubtitleSegment,
+    SubtitleGenerationOptions,
+    decode_audio_window,
+    format_srt_timestamp,
+    render_markdown_transcript,
+    render_srt,
+    render_vtt,
+    subtitle_generation_dependency_status,
+    subtitle_output_path,
+    write_subtitle_segments,
+)
 from m1_player.subtitle_lint import lint_cues, lint_subtitle_file  # noqa: E402
 from m1_player.subtitle_manifest import build_subtitle_manifest, write_missing_markdown_placeholders  # noqa: E402
 from m1_player.subtitle_resolver import SubtitleResolver, safe_filename_stem  # noqa: E402
@@ -265,6 +278,18 @@ def main() -> int:
     assert active_cue(md_cues, 4.0).text == "第二段說明"
     assert "第三段第二行" in active_cue(md_cues, 6.0).text
     assert safe_filename_stem("紀宜昕 20250225 1.mp4") == "紀宜昕_20250225_1"
+    assert format_srt_timestamp(3723.456) == "01:02:03,456"
+    generated_segments = [
+        GeneratedSubtitleSegment(1, 0.0, 2.5, "第一段字幕"),
+        GeneratedSubtitleSegment(2, 2.5, 5.0, "第二段字幕"),
+    ]
+    rendered_srt = render_srt(generated_segments)
+    assert "00:00:00,000 --> 00:00:02,500" in rendered_srt
+    assert "第一段字幕" in rendered_srt
+    rendered_vtt = render_vtt(generated_segments)
+    assert rendered_vtt.startswith("WEBVTT")
+    rendered_md = render_markdown_transcript(generated_segments)
+    assert "[00:00:00.000 --> 00:00:02.500] 第一段字幕" in rendered_md
     subtitle_dir = tmp_dir / "subtitles"
     subtitle_dir.mkdir(exist_ok=True)
     subtitle_path = subtitle_dir / f"{parsed.videos[0].stable_key.replace(':', '_')}.srt"
@@ -282,6 +307,22 @@ def main() -> int:
     found_path, found_cues = subtitle_resolver.load_for(subtitle_record)
     assert found_path == subtitle_path
     assert len(found_cues) == 2
+    generated_output_path = subtitle_output_path(subtitle_record, subtitle_dir, ".srt")
+    write_subtitle_segments(generated_output_path, generated_segments)
+    generated_lint = lint_subtitle_file(generated_output_path)
+    assert generated_lint.passes
+    assert generated_lint.cue_count == 2
+    assert SubtitleGenerationOptions().model_size == "medium"
+    assert SubtitleGenerationOptions().language == "zh"
+    assert "Kubernetes" in (SubtitleGenerationOptions().hotwords or "")
+    dependency_status = subtitle_generation_dependency_status()
+    assert isinstance(dependency_status.ready, bool)
+    assert isinstance(dependency_status.cuda_runtime_available, bool)
+    assert dependency_status.message
+    wav_path = tmp_dir / "subtitle_decode_probe.wav"
+    write_probe_wav(wav_path, duration_sec=2.0)
+    decoded_probe = decode_audio_window(str(wav_path), max_duration_sec=0.5)
+    assert 7_000 <= len(decoded_probe) <= 9_000
     subtitle_path.unlink()
     markdown_path = subtitle_dir / "lecture_part_1.md"
     markdown_path.write_text(SAMPLE_MARKDOWN_TRANSCRIPT, encoding="utf-8", newline="\n")
@@ -496,6 +537,15 @@ class FakeNotionCreatePageClient:
     def create_page(self, data_source_id: str, properties: dict[str, object]) -> dict[str, object]:
         self.created_pages.append({"data_source_id": data_source_id, "properties": properties})
         return {"id": "fake-page-id"}
+
+
+def write_probe_wav(path: Path, duration_sec: float = 1.0, sample_rate: int = 16_000) -> None:
+    sample_count = int(duration_sec * sample_rate)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"\x00\x00" * sample_count)
 
 
 if __name__ == "__main__":
