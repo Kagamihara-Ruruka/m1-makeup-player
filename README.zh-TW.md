@@ -319,7 +319,9 @@ $env:M1_WHISPER_HOTWORDS='Kubernetes, K8S, SQL, MySQL, TCP, HTTP, Docker, Linux,
 - CUDA 12 系列的 cuDNN 9。
 - 包含 `cublas64_12.dll` 的資料夾必須在 PATH 中，或由啟動腳本注入 PATH。
 
-若不想改全機 PATH，可用 `M1_CUDA_RUNTIME_DIRS` 指向含有 `cublas64_12.dll` 的資料夾；多個資料夾用 Windows 的分號分隔。程式啟動時會用 `os.add_dll_directory` 注入目前 Python 行程。
+`requirements.txt` 會安裝 `nvidia-cublas-cu12` 與 `nvidia-cudnn-cu12`。程式啟動時會自動尋找 `.venv\Lib\site-packages\nvidia\*\bin`，並只在目前 Python 行程內注入 DLL 搜尋路徑。這能避免修改全機 PATH，也能避免其他 AI/遊戲/開發工具被不同 CUDA/cuDNN 版本影響。
+
+若另有獨立 CUDA runtime 位置，可用 `M1_CUDA_RUNTIME_DIRS` 指向含有 `cublas64_12.dll` 的資料夾；多個資料夾用 Windows 的分號分隔。程式啟動時會同樣把它注入目前 Python 行程。
 
 ```powershell
 $env:M1_CUDA_RUNTIME_DIRS='D:\path\to\cuda-runtime-bin'

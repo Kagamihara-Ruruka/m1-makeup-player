@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import site
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,26 +115,32 @@ def cuda_runtime_available() -> bool:
     ensure_cuda_runtime_dirs()
     if shutil.which("cublas64_12.dll"):
         return True
-    if any((path / "cublas64_12.dll").exists() for path in cuda_runtime_candidate_dirs()):
+    if all(_dll_exists_in_candidate_dirs(name) for name in ("cublas64_12.dll", "cudnn64_9.dll")):
         return True
     return False
 
 
 def ensure_cuda_runtime_dirs() -> None:
+    runtime_dirs = [path for path in cuda_runtime_candidate_dirs() if any(path.glob("*.dll"))]
+    prepend_runtime_dirs_to_path(runtime_dirs)
     if not hasattr(os, "add_dll_directory"):
         return
-    for path in cuda_runtime_candidate_dirs():
-        if not (path / "cublas64_12.dll").exists():
-            continue
+    for path in runtime_dirs:
         path_text = str(path)
-        if path_text in os.environ.get("PATH", ""):
-            continue
         if any(str(getattr(handle, "path", "")) == path_text for handle in _CUDA_DLL_DIRECTORY_HANDLES):
             continue
         try:
             _CUDA_DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(path_text))
         except OSError:
             continue
+
+
+def prepend_runtime_dirs_to_path(paths: list[Path]) -> None:
+    current_parts = os.environ.get("PATH", "").split(os.pathsep)
+    current_lower = {part.lower() for part in current_parts}
+    new_parts = [str(path) for path in paths if str(path).lower() not in current_lower]
+    if new_parts:
+        os.environ["PATH"] = os.pathsep.join(new_parts + current_parts)
 
 
 def cuda_runtime_candidate_dirs() -> list[Path]:
@@ -152,6 +160,14 @@ def cuda_runtime_candidate_dirs() -> list[Path]:
         candidates.append(root_path / "bin")
         if root_path.name.upper() == "CUDA":
             candidates.extend(root_path.glob(r"v*\bin"))
+    for package_root in python_nvidia_runtime_roots():
+        candidates.extend(
+            [
+                package_root / "cublas" / "bin",
+                package_root / "cudnn" / "bin",
+                package_root / "cuda_nvrtc" / "bin",
+            ]
+        )
     unique: list[Path] = []
     seen: set[str] = set()
     for path in candidates:
@@ -161,6 +177,21 @@ def cuda_runtime_candidate_dirs() -> list[Path]:
         seen.add(path_key)
         unique.append(path)
     return unique
+
+
+def python_nvidia_runtime_roots() -> list[Path]:
+    roots: list[Path] = []
+    search_roots = [Path(path) for path in site.getsitepackages()]
+    search_roots.append(Path(sys.prefix) / "Lib" / "site-packages")
+    for root in search_roots:
+        nvidia_root = root / "nvidia"
+        if nvidia_root.exists():
+            roots.append(nvidia_root)
+    return roots
+
+
+def _dll_exists_in_candidate_dirs(filename: str) -> bool:
+    return any((path / filename).exists() for path in cuda_runtime_candidate_dirs())
 
 
 def subtitle_output_path(
