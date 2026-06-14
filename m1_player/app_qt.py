@@ -183,6 +183,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
         self.subtitle_placeholder_button.setHidden(True)
         self.subtitle_generate_button = QPushButton("生成字幕")
+        self.subtitle_generate_button.setHidden(True)
         self.flush_writeback_button = QPushButton("送出完成紀錄")
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 0)
