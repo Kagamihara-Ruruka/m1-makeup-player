@@ -44,6 +44,7 @@ class FakePlaybackCore:
         self.fullscreen_calls: list[bool] = []
         self.subtitle_paths: list[str] = []
         self.subtitle_visibility_calls: list[bool] = []
+        self.caption_calls: list[tuple[str, int]] = []
 
     def available(self) -> bool:
         return True
@@ -85,6 +86,9 @@ class FakePlaybackCore:
 
     def set_subtitle_visible(self, enabled: bool) -> None:
         self.subtitle_visibility_calls.append(bool(enabled))
+
+    def show_caption(self, text: str, duration_ms: int = 1400) -> None:
+        self.caption_calls.append((text, int(duration_ms)))
 
     def position_sec(self) -> float | None:
         return self.position
@@ -143,11 +147,12 @@ def main() -> int:
         assert window.set_token_button.text() == "設定 token"
         assert window.set_completion_source_button.text() == "設定完成庫"
         assert window.set_schedule_view_button.text() == "設定課表"
-        assert window.play_button.text() == "播放"
-        assert window.restart_button.text() == "從頭"
-        assert window.rewind_button.text() == "-15"
-        assert window.forward_button.text() == "+15"
-        assert window.fullscreen_button.text() == "全螢幕"
+        assert window.play_button.text() == "▶"
+        assert window.play_button.toolTip() == "播放 / 暫停"
+        assert window.restart_button.text() == "⏮"
+        assert window.rewind_button.text() == "⏪"
+        assert window.forward_button.text() == "⏩"
+        assert window.fullscreen_button.text() == "⛶"
         assert window.complete_button.text() == "標記完成"
         assert window.subtitle_placeholder_button.text() == "建立字幕佔位"
         assert window.subtitle_placeholder_button.isHidden()
@@ -244,7 +249,8 @@ def main() -> int:
         assert fake_core.speed == 8.0
         window.toggle_player_fullscreen()
         assert window.player_fullscreen
-        assert window.fullscreen_button.text() == "離開全螢幕"
+        assert window.fullscreen_button.text() == "⛶"
+        assert window.fullscreen_button.toolTip() == "離開全螢幕"
         assert window.left_panel.isHidden()
         assert window.detail_box.isHidden()
         assert window.subtitle_box.isHidden()
@@ -253,7 +259,8 @@ def main() -> int:
         assert window.flush_writeback_button.isHidden()
         window.toggle_player_fullscreen()
         assert not window.player_fullscreen
-        assert window.fullscreen_button.text() == "全螢幕"
+        assert window.fullscreen_button.text() == "⛶"
+        assert window.fullscreen_button.toolTip() == "切換全螢幕"
         assert not window.left_panel.isHidden()
         assert not window.detail_box.isHidden()
         assert not window.subtitle_box.isHidden()
@@ -269,6 +276,7 @@ def main() -> int:
         window.on_subtitle_generation_progress("audio_decode_start", 5, "讀取遠端音訊串流")
         assert not window.caption_overlay.isHidden()
         assert "CC 準備中" in window.caption_overlay.text()
+        assert fake_core.caption_calls[-1][0].startswith("CC 準備中")
         window.on_subtitle_generation_progress("inference_segment", -1, "字幕解析中")
         assert window.subtitle_progress_bar.minimum() == 0
         assert window.subtitle_progress_bar.maximum() == 0
@@ -311,6 +319,7 @@ def main() -> int:
         window.highlight_subtitle(0.0)
         assert window.active_subtitle_label.text() == "待補字幕"
         assert window.caption_overlay.text() == "待補字幕"
+        assert fake_core.caption_calls[-1] == ("待補字幕", 1600)
         assert subtitle_cues_need_generation(window.cues)
         assert window.current_playback_position_for_subtitles() == 60.0
         assert window.current_playability is not None

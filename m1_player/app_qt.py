@@ -375,11 +375,11 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.set_token_button = QPushButton("設定 token")
         self.set_completion_source_button = QPushButton("設定完成庫")
         self.set_schedule_view_button = QPushButton("設定課表")
-        self.play_button = QPushButton("播放")
-        self.restart_button = QPushButton("從頭")
-        self.rewind_button = QPushButton("-15")
-        self.forward_button = QPushButton("+15")
-        self.fullscreen_button = QPushButton("全螢幕")
+        self.play_button = QPushButton("▶")
+        self.restart_button = QPushButton("⏮")
+        self.rewind_button = QPushButton("⏪")
+        self.forward_button = QPushButton("⏩")
+        self.fullscreen_button = QPushButton("⛶")
         self.complete_button = QPushButton("標記完成")
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
         self.subtitle_placeholder_button.setHidden(True)
@@ -396,10 +396,11 @@ class M1MakeupPlayerWindow(QMainWindow):
         for label, speed in playback_speed_options():
             self.speed_combo.addItem(label, speed)
         self.speed_combo.setCurrentIndex(2)
-        self.cc_button = QPushButton("CC")
+        self.cc_button = QPushButton("💬")
         self.cc_button.setCheckable(True)
         self.cc_button.setChecked(True)
         self.cc_button.setEnabled(False)
+        self._configure_player_icon_buttons()
         self.position_slider = SeekSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 0)
         self.position_time_label = QLabel("00:00 / --:--")
@@ -455,6 +456,18 @@ class M1MakeupPlayerWindow(QMainWindow):
         if not callable(set_window_id):
             return
         set_window_id(int(self.player_label.winId()))
+
+    def _configure_player_icon_buttons(self) -> None:
+        for button, tooltip in (
+            (self.play_button, "播放 / 暫停"),
+            (self.restart_button, "從頭播放"),
+            (self.rewind_button, "快退 15 秒"),
+            (self.forward_button, "快進 15 秒"),
+            (self.fullscreen_button, "切換全螢幕"),
+            (self.cc_button, "字幕開關"),
+        ):
+            button.setToolTip(tooltip)
+            button.setMinimumWidth(42)
 
     def _build_layout(self) -> None:
         left = QWidget()
@@ -537,6 +550,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.player_click_overlay.setGeometry(self.player_label.rect())
         self.position_caption_overlay()
         self.player_click_overlay.raise_()
+        self.refresh_player_button_chrome()
 
     def _connect_signals(self) -> None:
         self.sync_button.clicked.connect(self.start_sync)
@@ -1152,7 +1166,9 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.flush_writeback_button,
         ):
             widget.setHidden(enabled)
-        self.fullscreen_button.setText("離開全螢幕" if enabled else "全螢幕")
+        self.fullscreen_button.setText("⛶")
+        self.fullscreen_button.setToolTip("離開全螢幕" if enabled else "切換全螢幕")
+        self.refresh_player_button_chrome()
         if enabled:
             self.showFullScreen()
         else:
@@ -1185,6 +1201,14 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.highlight_subtitle(self.current_playback_position_for_subtitles())
         else:
             self.hide_caption_overlay()
+
+    def refresh_player_button_chrome(self) -> None:
+        self.play_button.setText("▶")
+        self.restart_button.setText("⏮")
+        self.rewind_button.setText("⏪")
+        self.forward_button.setText("⏩")
+        self.fullscreen_button.setText("⛶")
+        self.cc_button.setText("💬")
 
     def poll_playback_position(self) -> None:
         if self.current_record is None or not self.playback_core.available():
@@ -1257,10 +1281,22 @@ class M1MakeupPlayerWindow(QMainWindow):
             return
         self.caption_overlay.setText(value)
         self.caption_overlay.setHidden(False)
+        self.show_mpv_caption(value)
         self.player_click_overlay.raise_()
 
     def hide_caption_overlay(self) -> None:
         self.caption_overlay.setHidden(True)
+
+    def show_mpv_caption(self, text: str) -> None:
+        if not self.playback_core.available():
+            return
+        show_caption = getattr(self.playback_core, "show_caption", None)
+        if not callable(show_caption):
+            return
+        try:
+            show_caption(text, 1600)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"mpv caption overlay failed: {exc}")
 
     def position_caption_overlay(self) -> None:
         return

@@ -45,6 +45,9 @@ class PlaybackCore(Protocol):
     def set_subtitle_visible(self, enabled: bool) -> None:
         ...
 
+    def show_caption(self, text: str, duration_ms: int = 1400) -> None:
+        ...
+
     def position_sec(self) -> float | None:
         ...
 
@@ -115,6 +118,9 @@ class MissingPlaybackCore:
         raise RuntimeError(self.reason)
 
     def set_subtitle_visible(self, enabled: bool) -> None:
+        raise RuntimeError(self.reason)
+
+    def show_caption(self, text: str, duration_ms: int = 1400) -> None:
         raise RuntimeError(self.reason)
 
     def position_sec(self) -> float | None:
@@ -200,6 +206,11 @@ class MpvIpcPlaybackCore:
     def set_subtitle_visible(self, enabled: bool) -> None:
         self.set_property("sub-visibility", bool(enabled))
 
+    def show_caption(self, text: str, duration_ms: int = 1400) -> None:
+        value = str(text or "").strip()
+        duration = max(1, int(duration_ms))
+        self.command(["show-text", value, duration])
+
     def position_sec(self) -> float | None:
         return _as_float(self.get_property("time-pos"))
 
@@ -253,6 +264,12 @@ def mpv_start_args(mpv_path: str, pipe_path: str, window_id: int | None = None) 
         "--force-seekable=yes",
         "--demuxer-max-bytes=50MiB",
         "--audio-pitch-correction=yes",
+        "--osd-align-x=center",
+        "--osd-align-y=bottom",
+        "--osd-margin-y=96",
+        "--osd-font-size=32",
+        "--osd-border-size=3",
+        "--osd-shadow-offset=2",
     ]
     if window_id is not None and window_id > 0:
         args.insert(2, f"--wid={int(window_id)}")
