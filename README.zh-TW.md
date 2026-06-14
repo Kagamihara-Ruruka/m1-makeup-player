@@ -388,10 +388,10 @@ Notion/CDN 要視為不受控外部服務，不可把單次成功吞吐當合約
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180
 ```
 
-若要讓 T 後方越靠近播放頭越細，可用 Fibonacci 切窗；T 前 backfill 仍維持等差切：
+若要讓 T 後方越靠近播放頭越細，可用 Fibonacci 切窗；T 前 backfill 仍維持等差切。以目前每窗格重新開遠端串流的實作，Fibonacci base 不應低於 60 秒。15 秒 base 只適合未來已能共享串流握手或長連線 demux 的版本：
 
 ```powershell
-py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180 --future-window-strategy fibonacci --future-base-window-sec 15
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180 --future-window-strategy fibonacci --future-base-window-sec 60
 ```
 
 若已有播放 cache 與字幕 sidecar，可用 `--key "<stable_key>"` 讓工具讀取目前播放位置與已覆蓋字幕區間。這一步只產生 future/backfill job plan，不會啟動 Whisper，也不會寫入 Notion。
