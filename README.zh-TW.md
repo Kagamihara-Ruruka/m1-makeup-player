@@ -156,6 +156,15 @@ Notion 課程安排 database：
 
 ## 啟動
 
+一般使用者版：
+
+```bat
+bootstrap_windows.bat
+run_player.bat
+```
+
+開發者或已建立 `.venv` 的本機：
+
 ```powershell
 $env:PYTHONUTF8='1'
 D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeup-player\scripts\settings_status.py
@@ -217,6 +226,18 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 左側的「API 設定精靈」是一般版入口；「設定 token」、「設定完成庫」與「設定課表」保留為快速單項設定。這些設定都會寫入本地 `state/local_settings.json`。token 輸入框使用密碼模式，事件紀錄只顯示保存位置，不會列印 token 內容。設定保存後會立刻更新本次 UI session 的 resolver、readiness、writeback sink 與課表同步 URL，不需要重開播放器才生效。
 
 `setup_guide.py` 與 UI readiness 區會列出可複製命令，用來完成 token、補課紀錄 data source、schema 檢查、同步試跑、影片來源解析與 UI 啟動。它只是一張操作清單，不會自動送出 secret。
+
+## 發佈準備
+
+發佈前先跑：
+
+```powershell
+$env:PYTHONUTF8='1'
+.venv\Scripts\python.exe scripts\check_release.py
+.venv\Scripts\python.exe scripts\build_release_package.py
+```
+
+打包腳本會產生 `dist\m1-makeup-player-<version>.zip`。它只打包 Git 追蹤檔，並排除 `.venv/`、`state/`、`subtitles/`、`tmp/` 與 `dist/`，避免把 token、播放 cache、短效 URL 或字幕 cache 發出去。發佈準備細節見 `docs/RELEASE_PREP.zh-TW.md`。
 
 「建立字幕佔位」是進階維護功能，主畫面預設隱藏。它會替目前選取的影片建立一個 timestamped Markdown sidecar，預設內容只有第一條 `待補字幕` cue。若同一段影片已經有 `.md`、`.srt` 或 `.vtt`，UI 不會覆寫既有字幕檔；日常流程應直接播放，讓播放時間軸自動觸發字幕生成。
 
@@ -331,7 +352,7 @@ $env:M1_WHISPER_HOTWORDS='Kubernetes, K8S, SQL, MySQL, TCP, HTTP, Docker, Linux,
 - CUDA 12 系列的 cuDNN 9。
 - 包含 `cublas64_12.dll` 的資料夾必須在 PATH 中，或由啟動腳本注入 PATH。
 
-`requirements.txt` 會安裝 `nvidia-cublas-cu12` 與 `nvidia-cudnn-cu12`。程式啟動時會自動尋找 `.venv\Lib\site-packages\nvidia\*\bin`，並只在目前 Python 行程內注入 DLL 搜尋路徑。這能避免修改全機 PATH，也能避免其他 AI/遊戲/開發工具被不同 CUDA/cuDNN 版本影響。
+`requirements-cuda.txt` 會安裝 `nvidia-cublas-cu12` 與 `nvidia-cudnn-cu12`。一般版的 `requirements.txt` 不強制安裝 CUDA runtime，避免沒有 NVIDIA GPU 的使用者被額外依賴拖住。程式啟動時會自動尋找 `.venv\Lib\site-packages\nvidia\*\bin`，並只在目前 Python 行程內注入 DLL 搜尋路徑。這能避免修改全機 PATH，也能避免其他 AI/遊戲/開發工具被不同 CUDA/cuDNN 版本影響。
 
 若另有獨立 CUDA runtime 位置，可用 `M1_CUDA_RUNTIME_DIRS` 指向含有 `cublas64_12.dll` 的資料夾；多個資料夾用 Windows 的分號分隔。程式啟動時會同樣把它注入目前 Python 行程。
 
