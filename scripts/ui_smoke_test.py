@@ -135,6 +135,7 @@ def main() -> int:
         assert window.active_subtitle_label.text() == "尚未載入字幕"
         assert window.detail_box.toPlainText() == "尚未選取影片"
         assert window.list_widget is not None
+        assert window.log_box.isHidden()
         readiness_text = window.readiness_box.toPlainText()
         assert "MVP 狀態：需要外部設定" in readiness_text
         assert "BLOCKED notion_token" in readiness_text

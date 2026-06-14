@@ -369,8 +369,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         right_layout.addWidget(QLabel("字幕提詞"))
         right_layout.addWidget(self.active_subtitle_label)
         right_layout.addWidget(self.subtitle_box, 2)
-        right_layout.addWidget(QLabel("事件"))
-        right_layout.addWidget(self.log_box, 1)
+        self.log_box.setHidden(True)
 
         splitter = QSplitter()
         splitter.addWidget(left)
