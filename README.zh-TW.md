@@ -175,6 +175,8 @@ token 會寫入 `state/local_settings.json`。也可以改用環境變數 `M1_NO
 
 有 token 時，啟動同步會優先走官方 Notion API。沒有 token 時才使用 Notion MCP fallback；MCP 可能需要瀏覽器登入狀態，也可能因外部握手卡住而 timeout。
 
+一般使用者版可直接在主畫面按「API 設定精靈」。精靈會顯示目前 token、課程安排 view、補課完成紀錄 data source、同步路徑與回寫模式，並提供三個欄位一次保存。最低可用設定是 Notion token 加課程安排 view；完成紀錄庫可以稍後再補。token 輸入框使用密碼模式，保存後只記錄設定檔位置，不會把 token 印到事件紀錄。
+
 同步成功時，UI 事件欄與 `scan_schedule.py` 會標出 `sync_backend`，用來區分 `official_notion_api` 與 `notion_mcp_fallback`。本地 cache 也會保存上次同步的 backend、時間、課程頁數與影片段數；`settings_status.py` 與 readiness 會讀取這份 metadata，不再只憑目前 token 狀態推測。
 
 設定課程安排 database view：
@@ -212,7 +214,7 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 
 「重新檢查」會同時寫入 preflight 與 MVP readiness gates 到事件紀錄。若 Notion token 或完成紀錄 data source 尚未設定，UI 會顯示外部設定未完成，而不是把它當成本地播放核心錯誤。若本地字幕尚未準備，readiness 會列為字幕 warning，影片播放仍可繼續。
 
-左側的「設定 token」、「設定完成庫」與「設定課表」會寫入本地 `state/local_settings.json`。token 輸入框使用密碼模式，事件紀錄只顯示保存位置，不會列印 token 內容。設定保存後會立刻更新本次 UI session 的 resolver、readiness、writeback sink 與課表同步 URL，不需要重開播放器才生效。
+左側的「API 設定精靈」是一般版入口；「設定 token」、「設定完成庫」與「設定課表」保留為快速單項設定。這些設定都會寫入本地 `state/local_settings.json`。token 輸入框使用密碼模式，事件紀錄只顯示保存位置，不會列印 token 內容。設定保存後會立刻更新本次 UI session 的 resolver、readiness、writeback sink 與課表同步 URL，不需要重開播放器才生效。
 
 `setup_guide.py` 與 UI readiness 區會列出可複製命令，用來完成 token、補課紀錄 data source、schema 檢查、同步試跑、影片來源解析與 UI 啟動。它只是一張操作清單，不會自動送出 secret。
 

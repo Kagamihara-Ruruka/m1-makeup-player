@@ -114,6 +114,7 @@ def main() -> int:
         assert fake_core.window_ids[0] > 0
         assert window.sync_button.text() == "重新同步"
         assert window.preflight_button.text() == "重新檢查"
+        assert window.api_settings_button.text() == "API 設定精靈"
         assert window.set_token_button.text() == "設定 token"
         assert window.set_completion_source_button.text() == "設定完成庫"
         assert window.set_schedule_view_button.text() == "設定課表"
@@ -147,6 +148,18 @@ def main() -> int:
         assert "readiness blocked:" in startup_log
         assert "notion_token" in startup_log
         assert "subtitle_files" in startup_log
+        wizard = window.create_api_settings_dialog()
+        assert wizard.windowTitle() == "API 設定精靈"
+        assert "Notion token：missing" in wizard.status_box.toPlainText()
+        wizard.token_input.setText("wizard-secret-token")
+        wizard.schedule_input.setText("https://notion.local/wizard-schedule")
+        wizard.completion_input.setText("wizard-completion-data-source")
+        wizard.save_settings()
+        wizard_settings = load_local_settings(temp / "local_settings.json")
+        assert wizard_settings.notion_token == "wizard-secret-token"
+        assert wizard_settings.schedule_view_url == "https://notion.local/wizard-schedule"
+        assert wizard_settings.completion_database_id == "wizard-completion-data-source"
+        assert "wizard-secret-token" not in window.log_box.toPlainText()
         assert window.save_notion_token("secret-token-for-ui-smoke")
         assert window.attachment_resolver.token == "secret-token-for-ui-smoke"
         assert window.save_completion_data_source("completion-data-source-id")

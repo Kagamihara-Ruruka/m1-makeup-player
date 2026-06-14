@@ -19,6 +19,7 @@ from .readiness_summary import readiness_display_text
 from .resolved_url_cache import ResolvedUrlCache
 from .runtime_config import load_app_config
 from .settings_actions import set_completion_data_source, set_notion_token, set_schedule_view_url
+from .settings_status import collect_settings_status
 from .subtitle import SubtitleCue, active_cue
 from .subtitle_generation import (
     DEFAULT_INITIAL_PROMPT,
@@ -41,6 +42,7 @@ try:
     from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
     from PySide6.QtWidgets import (
         QApplication,
+        QDialog,
         QHBoxLayout,
         QInputDialog,
         QLabel,
@@ -124,6 +126,104 @@ class SubtitleGenerationWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class ApiSettingsDialog(QDialog):
+    def __init__(self, owner: "M1MakeupPlayerWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.setWindowTitle("API 設定精靈")
+        self.resize(720, 520)
+
+        intro = QLabel(
+            "一般版需要連到你的 Notion。請在這裡設定 API token、課程安排 view，"
+            "以及可選的補課完成紀錄 data source。"
+        )
+        intro.setWordWrap(True)
+
+        self.status_box = QTextEdit()
+        self.status_box.setReadOnly(True)
+        self.status_box.setMinimumHeight(150)
+
+        self.token_input = QLineEdit()
+        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.token_input.setPlaceholderText("ntn_... 或 secret_...")
+
+        self.schedule_input = QLineEdit()
+        self.schedule_input.setPlaceholderText("貼上 Notion 課程安排 database view URL")
+
+        self.completion_input = QLineEdit()
+        self.completion_input.setPlaceholderText("貼上補課完成紀錄 data source URL 或 id，可先留空")
+
+        self.save_button = QPushButton("保存設定")
+        self.refresh_button = QPushButton("重新檢查")
+        self.sync_button = QPushButton("同步課表")
+        self.close_button = QPushButton("關閉")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        layout.addWidget(QLabel("目前狀態"))
+        layout.addWidget(self.status_box)
+        layout.addWidget(QLabel("Notion API token"))
+        layout.addWidget(self.token_input)
+        layout.addWidget(QLabel("課程安排 view URL"))
+        layout.addWidget(self.schedule_input)
+        layout.addWidget(QLabel("補課完成紀錄 data source"))
+        layout.addWidget(self.completion_input)
+
+        buttons = QWidget()
+        buttons_layout = QHBoxLayout(buttons)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.addWidget(self.save_button)
+        buttons_layout.addWidget(self.refresh_button)
+        buttons_layout.addWidget(self.sync_button)
+        buttons_layout.addWidget(self.close_button)
+        layout.addWidget(buttons)
+
+        self.save_button.clicked.connect(self.save_settings)
+        self.refresh_button.clicked.connect(self.refresh_status)
+        self.sync_button.clicked.connect(self.start_sync)
+        self.close_button.clicked.connect(self.accept)
+        self.refresh_status()
+
+    def refresh_status(self) -> None:
+        status = collect_settings_status(self.owner.config, self.owner.local_settings_path)
+        token = status["notion_token"]
+        schedule = status["schedule_view"]
+        completion = status["completion_data_source"]
+        lines = [
+            f"設定檔：{status['settings_path']}",
+            f"Notion token：{token['status']} ({token['source']})",
+            f"課程安排 view：{schedule['status']} ({schedule['redacted_id'] or 'missing'})",
+            f"完成紀錄 data source：{completion['status']} ({completion['redacted_id'] or 'missing'})",
+            f"同步路徑：{status['planned_sync_backend']}",
+            f"回寫模式：{status['writeback_mode']}",
+            "",
+            "說明：token 只會存在本機設定檔或環境變數，不會寫入 Git，也不會印在事件紀錄。",
+            "最低可用設定是 token 加課程安排 view；完成紀錄庫可稍後再補。",
+        ]
+        self.status_box.setPlainText("\n".join(lines))
+
+    def save_settings(self) -> None:
+        changed = False
+        token = self.token_input.text().strip()
+        schedule = self.schedule_input.text().strip()
+        completion = self.completion_input.text().strip()
+        if token:
+            changed = self.owner.save_notion_token(token) or changed
+            self.token_input.clear()
+        if schedule:
+            changed = self.owner.save_schedule_view_url(schedule) or changed
+        if completion:
+            changed = self.owner.save_completion_data_source(completion) or changed
+        if not changed:
+            self.owner.log("api settings wizard: no non-empty setting was saved")
+        self.refresh_status()
+
+    def start_sync(self) -> None:
+        self.owner.run_local_preflight()
+        self.owner.start_sync()
+        self.refresh_status()
+
+
 class M1MakeupPlayerWindow(QMainWindow):
     def __init__(
         self,
@@ -175,6 +275,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.progress_overview_box.setPlainText("補課總覽\n影片總數：0")
         self.sync_button = QPushButton("重新同步")
         self.preflight_button = QPushButton("重新檢查")
+        self.api_settings_button = QPushButton("API 設定精靈")
         self.set_token_button = QPushButton("設定 token")
         self.set_completion_source_button = QPushButton("設定完成庫")
         self.set_schedule_view_button = QPushButton("設定課表")
@@ -235,6 +336,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         left_controls_layout.setContentsMargins(0, 0, 0, 0)
         left_controls_layout.addWidget(self.sync_button)
         left_controls_layout.addWidget(self.preflight_button)
+        left_controls_layout.addWidget(self.api_settings_button)
         left_layout.addWidget(left_controls)
         settings_controls = QWidget()
         settings_controls_layout = QHBoxLayout(settings_controls)
@@ -279,6 +381,7 @@ class M1MakeupPlayerWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.sync_button.clicked.connect(self.start_sync)
         self.preflight_button.clicked.connect(self.run_local_preflight)
+        self.api_settings_button.clicked.connect(self.open_api_settings_dialog)
         self.set_token_button.clicked.connect(self.prompt_notion_token)
         self.set_completion_source_button.clicked.connect(self.prompt_completion_data_source)
         self.set_schedule_view_button.clicked.connect(self.prompt_schedule_view_url)
@@ -294,6 +397,12 @@ class M1MakeupPlayerWindow(QMainWindow):
 
     def log(self, message: str) -> None:
         self.log_box.append(message)
+
+    def create_api_settings_dialog(self) -> ApiSettingsDialog:
+        return ApiSettingsDialog(self)
+
+    def open_api_settings_dialog(self) -> None:
+        self.create_api_settings_dialog().exec()
 
     def prompt_notion_token(self) -> None:
         token, ok = QInputDialog.getText(
