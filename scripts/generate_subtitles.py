@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
 
@@ -48,6 +49,7 @@ def main() -> int:
     parser.add_argument("--hotwords", default=DEFAULT_TECHNICAL_HOTWORDS)
     parser.add_argument("--format", default="srt", choices=["srt", "vtt", "md"])
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--progress-log", help="Optional JSONL progress log for long-running generation.")
     parser.add_argument("--check-deps", action="store_true")
     args = parser.parse_args()
 
@@ -98,6 +100,7 @@ def main() -> int:
     payloads = []
     failed = 0
     for record in records:
+        write_progress_event(args.progress_log, "record_selected", record)
         existing_path, existing_cues = subtitle_resolver.load_for(record)
         if existing_path and existing_cues and not args.overwrite:
             payload = {
@@ -108,6 +111,7 @@ def main() -> int:
                 "cue_count": len(existing_cues),
             }
             payloads.append(payload)
+            write_progress_event(args.progress_log, "skipped_existing", record, payload)
             print_status(payload, args.json)
             continue
         media_ref = playable_media_ref(record, resolver)
@@ -120,8 +124,20 @@ def main() -> int:
                 "message": "could not resolve playable media URL",
             }
             payloads.append(payload)
+            write_progress_event(args.progress_log, "failed_media_resolution", record, payload)
             print_status(payload, args.json)
             continue
+        write_progress_event(
+            args.progress_log,
+            "generation_started",
+            record,
+            {
+                "model_size": options.model_size,
+                "device": options.device,
+                "compute_type": options.compute_type,
+                "max_duration_sec": options.max_duration_sec,
+            },
+        )
         try:
             result = generate_subtitle_sidecar(record, media_ref, args.subtitle_dir, options)
         except SubtitleGenerationError as exc:
@@ -133,6 +149,7 @@ def main() -> int:
                 "message": str(exc),
             }
             payloads.append(payload)
+            write_progress_event(args.progress_log, "failed_generation", record, payload)
             print_status(payload, args.json)
             continue
         if result.subtitle_path:
@@ -149,6 +166,7 @@ def main() -> int:
             "audio_duration_sec": result.audio_duration_sec,
             "handshake_elapsed_sec": result.handshake_elapsed_sec,
             "decode_loop_elapsed_sec": result.decode_loop_elapsed_sec,
+            "model_load_elapsed_sec": result.model_load_elapsed_sec,
             "decode_elapsed_sec": result.decode_elapsed_sec,
             "inference_elapsed_sec": result.inference_elapsed_sec,
             "processing_elapsed_without_handshake_sec": result.processing_elapsed_without_handshake_sec,
@@ -162,6 +180,7 @@ def main() -> int:
         if result.rolling_pipeline_plan:
             payload["rolling_pipeline_plan"] = asdict(result.rolling_pipeline_plan)
         payloads.append(payload)
+        write_progress_event(args.progress_log, "generated", record, payload)
         print_status(payload, args.json)
 
     if args.json:
@@ -210,6 +229,7 @@ def print_status(payload: dict[str, object], as_json: bool) -> None:
             f"audio={payload.get('audio_duration_sec')}s "
             f"handshake={payload.get('handshake_elapsed_sec')}s "
             f"loop={payload.get('decode_loop_elapsed_sec')}s "
+            f"model_load={payload.get('model_load_elapsed_sec')}s "
             f"decode={payload.get('decode_elapsed_sec')}s "
             f"inference={payload.get('inference_elapsed_sec')}s "
             f"capacity={payload.get('processing_capacity_ratio')}x "
@@ -224,6 +244,28 @@ def print_status(payload: dict[str, object], as_json: bool) -> None:
                 f"keep_up={plan.get('can_keep_up')}"
             )
     print(f"{status} {name} {message}")
+
+
+def write_progress_event(
+    progress_log: str | None,
+    stage: str,
+    record: PlaybackRecord,
+    payload: dict[str, object] | None = None,
+) -> None:
+    if not progress_log:
+        return
+    path = Path(progress_log)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "time": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "stage": stage,
+        "record_key": record.stable_key,
+        "video_name": record.video_name,
+    }
+    if payload:
+        event.update(payload)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

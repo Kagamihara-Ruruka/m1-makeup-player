@@ -49,6 +49,7 @@ class SubtitleGenerationOptions:
     overwrite: bool = False
     output_suffix: str = ".srt"
     max_duration_sec: float | None = None
+    start_sec: float = 0.0
     initial_prompt: str | None = DEFAULT_INITIAL_PROMPT
     hotwords: str | None = DEFAULT_TECHNICAL_HOTWORDS
 
@@ -94,6 +95,7 @@ class TranscriptionRun:
     audio_duration_sec: float
     handshake_elapsed_sec: float
     decode_loop_elapsed_sec: float
+    model_load_elapsed_sec: float
     decode_elapsed_sec: float
     inference_elapsed_sec: float
 
@@ -112,6 +114,7 @@ class SubtitleGenerationResult:
     audio_duration_sec: float | None = None
     handshake_elapsed_sec: float | None = None
     decode_loop_elapsed_sec: float | None = None
+    model_load_elapsed_sec: float | None = None
     decode_elapsed_sec: float | None = None
     inference_elapsed_sec: float | None = None
     processing_elapsed_without_handshake_sec: float | None = None
@@ -285,6 +288,7 @@ def generate_subtitle_sidecar(
             audio_duration_sec=transcription.audio_duration_sec,
             handshake_elapsed_sec=transcription.handshake_elapsed_sec,
             decode_loop_elapsed_sec=transcription.decode_loop_elapsed_sec,
+            model_load_elapsed_sec=transcription.model_load_elapsed_sec,
             decode_elapsed_sec=transcription.decode_elapsed_sec,
             inference_elapsed_sec=transcription.inference_elapsed_sec,
             processing_elapsed_without_handshake_sec=processing_elapsed_without_handshake(transcription),
@@ -325,11 +329,18 @@ def transcribe_media_with_timing(
 ) -> TranscriptionRun:
     from faster_whisper import WhisperModel  # type: ignore[import-not-found]
 
-    audio_result = decode_audio_window_with_timing(media_ref, max_duration_sec=options.max_duration_sec)
+    ensure_cuda_runtime_dirs()
+    audio_result = decode_audio_window_with_timing(
+        media_ref,
+        max_duration_sec=options.max_duration_sec,
+        start_sec=options.start_sec,
+    )
     audio = audio_result.audio
     decode_elapsed_sec = audio_result.total_elapsed_sec
-    inference_started = time.perf_counter()
+    model_load_started = time.perf_counter()
     model = WhisperModel(options.model_size, device=device, compute_type=compute_type)
+    model_load_elapsed_sec = round(time.perf_counter() - model_load_started, 3)
+    inference_started = time.perf_counter()
     kwargs = {
         "language": options.language,
         "vad_filter": options.vad_filter,
@@ -356,13 +367,14 @@ def transcribe_media_with_timing(
             segments_iter = None
     if segments_iter is None:
         segments_iter, _info = model.transcribe(audio, **kwargs)
-    segments = generated_segments_from_faster_whisper(segments_iter)
+    segments = offset_segments(generated_segments_from_faster_whisper(segments_iter), options.start_sec)
     inference_elapsed_sec = round(time.perf_counter() - inference_started, 3)
     return TranscriptionRun(
         segments=segments,
         audio_duration_sec=round(audio_result.sample_count / 16_000, 3),
         handshake_elapsed_sec=audio_result.handshake_elapsed_sec,
         decode_loop_elapsed_sec=audio_result.decode_loop_elapsed_sec,
+        model_load_elapsed_sec=model_load_elapsed_sec,
         decode_elapsed_sec=decode_elapsed_sec,
         inference_elapsed_sec=inference_elapsed_sec,
     )
@@ -384,6 +396,20 @@ def can_keep_up_without_handshake(transcription: TranscriptionRun, playback_rate
     if ratio is None:
         return None
     return ratio >= playback_rate
+
+
+def offset_segments(segments: list[GeneratedSubtitleSegment], offset_sec: float) -> list[GeneratedSubtitleSegment]:
+    if offset_sec <= 0:
+        return segments
+    return [
+        GeneratedSubtitleSegment(
+            index=segment.index,
+            start_sec=round(segment.start_sec + offset_sec, 3),
+            end_sec=round(segment.end_sec + offset_sec, 3),
+            text=segment.text,
+        )
+        for segment in segments
+    ]
 
 
 def decode_audio_window(
