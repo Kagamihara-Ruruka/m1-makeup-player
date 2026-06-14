@@ -122,17 +122,7 @@ class MpvIpcPlaybackCore:
         if self.proc and self.proc.poll() is None and self.pipe:
             return
         self.proc = subprocess.Popen(
-            [
-                self.mpv_path,
-                "--idle=yes",
-                "--force-window=yes",
-                "--input-terminal=no",
-                f"--input-ipc-server={self.pipe_path}",
-                "--keep-open=yes",
-                "--cache=yes",
-                "--force-seekable=yes",
-                "--demuxer-max-bytes=50MiB",
-            ],
+            mpv_start_args(self.mpv_path, self.pipe_path),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -206,6 +196,21 @@ class MpvIpcPlaybackCore:
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
         self.proc = None
+
+
+def mpv_start_args(mpv_path: str, pipe_path: str) -> list[str]:
+    return [
+        mpv_path,
+        "--idle=yes",
+        "--force-window=yes",
+        "--input-terminal=no",
+        f"--input-ipc-server={pipe_path}",
+        "--keep-open=yes",
+        "--cache=yes",
+        "--force-seekable=yes",
+        "--demuxer-max-bytes=50MiB",
+        "--audio-pitch-correction=yes",
+    ]
 
 
 def create_default_playback_core() -> PlaybackCore:

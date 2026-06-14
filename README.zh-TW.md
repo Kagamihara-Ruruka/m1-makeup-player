@@ -226,6 +226,8 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 - 影片接近完成門檻時會自動排入完成 outbox。
 - 也可以按「標記完成」手動排入完成 outbox，用於補登或播放器未能取得完整 duration 的情況。
 
+倍速播放只應改變時間軸，不應改變人聲音高。播放器啟動 mpv 時會明確帶入 `--audio-pitch-correction=yes`，避免高倍速時出現娃娃音。
+
 ## 字幕
 
 本地字幕放在 `D:\RRKAL_tools\m1-makeup-player\subtitles\`，目前支援 `.srt`、`.vtt` 與 `.md`。播放器會依序嘗試：

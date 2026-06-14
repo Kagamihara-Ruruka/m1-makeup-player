@@ -26,6 +26,7 @@ from m1_player.notion_property_adapter import notion_properties_for_completion_e
 from m1_player.notion_parser import parse_course_page  # noqa: E402
 from m1_player.progress import ProgressStore  # noqa: E402
 from m1_player.progress_overview import collect_progress_overview  # noqa: E402
+from m1_player.playback import mpv_start_args  # noqa: E402
 from m1_player.resolved_url_cache import ResolvedUrlCache  # noqa: E402
 from m1_player.runtime_config import schedule_view_url_with_source  # noqa: E402
 from m1_player.settings_actions import (  # noqa: E402
@@ -494,6 +495,9 @@ def main() -> int:
     local_rows = audit_streaming_sources([local_record])
     assert local_rows[0].policy_status == "blocked_non_stream_source"
     assert not streaming_policy_passes(local_rows, [])
+    mpv_args = mpv_start_args("mpv.exe", r"\\.\pipe\m1_smoke")
+    assert "--audio-pitch-correction=yes" in mpv_args
+    assert "--no-audio-pitch-correction" not in mpv_args
     record = PlaybackRecord.from_segment(parsed.videos[0])
     record.update_position(96, 100)
     assert record.should_complete(96, 100)
