@@ -41,6 +41,7 @@ from .writeback_sink import CompletionWritebackSink, FlushResult, flush_outbox
 
 try:
     from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+    from PySide6.QtGui import QKeySequence, QShortcut
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
@@ -52,6 +53,7 @@ try:
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QProgressBar,
         QPushButton,
         QSlider,
         QSplitter,
@@ -67,12 +69,34 @@ except ImportError as exc:  # pragma: no cover - exercised only without optional
     ) from exc
 
 
+class PlayerDoubleClickOverlay(QWidget):
+    double_clicked = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setToolTip("雙擊切換全螢幕")
+
+    def mouseDoubleClickEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
+        self.double_clicked.emit()
+        accept = getattr(event, "accept", None)
+        if callable(accept):
+            accept()
+
+
 class PlayerSurface(QLabel):
     double_clicked = Signal()
 
     def mouseDoubleClickEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
         self.double_clicked.emit()
         super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
+        super().resizeEvent(event)
+        for child in self.findChildren(PlayerDoubleClickOverlay):
+            child.setGeometry(self.rect())
+            child.raise_()
 
 
 class SyncWorker(QObject):
@@ -112,6 +136,7 @@ class WritebackFlushWorker(QObject):
 
 
 class SubtitleGenerationWorker(QObject):
+    progress = Signal(str, int, str)
     finished = Signal(object)
     failed = Signal(str)
 
@@ -131,9 +156,21 @@ class SubtitleGenerationWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            self.finished.emit(generate_subtitle_sidecar(self.record, self.media_ref, self.subtitle_dir, self.options))
+            self.finished.emit(
+                generate_subtitle_sidecar(
+                    self.record,
+                    self.media_ref,
+                    self.subtitle_dir,
+                    self.options,
+                    progress_callback=self.emit_progress,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - UI boundary reports the failure.
             self.failed.emit(str(exc))
+
+    def emit_progress(self, stage: str, percent: float | None, message: str) -> None:
+        percent_value = -1 if percent is None else max(0, min(100, int(round(percent))))
+        self.progress.emit(stage, percent_value, message)
 
 
 class ApiSettingsDialog(QDialog):
@@ -292,11 +329,18 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.set_completion_source_button = QPushButton("設定完成庫")
         self.set_schedule_view_button = QPushButton("設定課表")
         self.play_button = QPushButton("播放 / 暫停")
+        self.fullscreen_button = QPushButton("全螢幕")
         self.complete_button = QPushButton("標記完成")
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
         self.subtitle_placeholder_button.setHidden(True)
         self.subtitle_generate_button = QPushButton("生成字幕")
         self.subtitle_generate_button.setHidden(True)
+        self.subtitle_progress_label = QLabel("字幕解析：待命")
+        self.subtitle_progress_label.setHidden(True)
+        self.subtitle_progress_bar = QProgressBar()
+        self.subtitle_progress_bar.setRange(0, 100)
+        self.subtitle_progress_bar.setValue(0)
+        self.subtitle_progress_bar.setHidden(True)
         self.flush_writeback_button = QPushButton("送出完成紀錄")
         self.speed_combo = QComboBox()
         for label, speed in playback_speed_options():
@@ -325,6 +369,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.player_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_label.setMinimumHeight(260)
         self.player_label.setStyleSheet("border: 1px solid #555; background: #111; color: #ddd;")
+        self.player_click_overlay = PlayerDoubleClickOverlay(self.player_label)
         self.detail_box = QTextEdit()
         self.detail_box.setReadOnly(True)
         self.detail_box.setMaximumHeight(190)
@@ -349,6 +394,7 @@ class M1MakeupPlayerWindow(QMainWindow):
 
     def _build_layout(self) -> None:
         left = QWidget()
+        self.left_panel = left
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self.status_label)
         left_controls = QWidget()
@@ -372,13 +418,15 @@ class M1MakeupPlayerWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self.player_label, 3)
-        right_layout.addWidget(QLabel("目前影片狀態"))
+        self.detail_title = QLabel("目前影片狀態")
+        right_layout.addWidget(self.detail_title)
         right_layout.addWidget(self.detail_box)
         right_layout.addWidget(self.position_slider)
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.addWidget(self.play_button)
+        controls_layout.addWidget(self.fullscreen_button)
         controls_layout.addWidget(QLabel("倍速"))
         controls_layout.addWidget(self.speed_combo)
         controls_layout.addWidget(self.cc_button)
@@ -388,17 +436,23 @@ class M1MakeupPlayerWindow(QMainWindow):
         controls_layout.addWidget(self.flush_writeback_button)
         controls_layout.addWidget(self.writeback_count_label)
         right_layout.addWidget(controls)
+        right_layout.addWidget(self.subtitle_progress_label)
+        right_layout.addWidget(self.subtitle_progress_bar)
         right_layout.addWidget(self.writeback_summary_box)
-        right_layout.addWidget(QLabel("字幕提詞"))
+        self.subtitle_title = QLabel("字幕提詞")
+        right_layout.addWidget(self.subtitle_title)
         right_layout.addWidget(self.active_subtitle_label)
         right_layout.addWidget(self.subtitle_box, 2)
         self.log_box.setHidden(True)
 
         splitter = QSplitter()
+        self.main_splitter = splitter
         splitter.addWidget(left)
         splitter.addWidget(right)
         splitter.setSizes([360, 920])
         self.setCentralWidget(splitter)
+        self.player_click_overlay.setGeometry(self.player_label.rect())
+        self.player_click_overlay.raise_()
 
     def _connect_signals(self) -> None:
         self.sync_button.clicked.connect(self.start_sync)
@@ -410,6 +464,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.list_widget.itemSelectionChanged.connect(self.select_current_item)
         self.list_widget.itemDoubleClicked.connect(self.play_selected_item)
         self.play_button.clicked.connect(self.toggle_playback)
+        self.fullscreen_button.clicked.connect(self.toggle_player_fullscreen)
         self.complete_button.clicked.connect(self.mark_current_completed)
         self.subtitle_placeholder_button.clicked.connect(self.create_current_subtitle_placeholder)
         self.subtitle_generate_button.clicked.connect(self.start_subtitle_generation)
@@ -417,9 +472,14 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.speed_combo.currentIndexChanged.connect(self.change_playback_speed)
         self.cc_button.toggled.connect(self.change_subtitle_visibility)
         self.player_label.double_clicked.connect(self.toggle_player_fullscreen)
+        self.player_click_overlay.double_clicked.connect(self.toggle_player_fullscreen)
         self.position_slider.sliderMoved.connect(self.seek_to_slider)
         self.subtitle_box.itemDoubleClicked.connect(self.seek_to_subtitle_item)
         self.position_timer.timeout.connect(self.poll_playback_position)
+        self.fullscreen_shortcut = QShortcut(QKeySequence("F"), self)
+        self.fullscreen_shortcut.activated.connect(self.toggle_player_fullscreen)
+        self.exit_fullscreen_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self.exit_fullscreen_shortcut.activated.connect(self.exit_player_fullscreen)
 
     def log(self, message: str) -> None:
         self.log_box.append(message)
@@ -757,12 +817,30 @@ class M1MakeupPlayerWindow(QMainWindow):
         )
         self.subtitle_generation_worker.moveToThread(self.subtitle_generation_thread)
         self.subtitle_generation_thread.started.connect(self.subtitle_generation_worker.run)
+        self.subtitle_generation_worker.progress.connect(self.on_subtitle_generation_progress)
         self.subtitle_generation_worker.finished.connect(self.on_subtitle_generation_finished)
         self.subtitle_generation_worker.failed.connect(self.on_subtitle_generation_failed)
         self.subtitle_generation_worker.finished.connect(self.subtitle_generation_thread.quit)
         self.subtitle_generation_worker.failed.connect(self.subtitle_generation_thread.quit)
         self.subtitle_generation_thread.finished.connect(self.cleanup_subtitle_generation_worker)
+        self.subtitle_progress_label.setHidden(False)
+        self.subtitle_progress_bar.setHidden(False)
+        self.subtitle_progress_bar.setRange(0, 0)
+        self.subtitle_progress_label.setText("字幕解析：準備中")
         self.subtitle_generation_thread.start()
+
+    @Slot(str, int, str)
+    def on_subtitle_generation_progress(self, stage: str, percent: int, message: str) -> None:
+        self.subtitle_progress_label.setHidden(False)
+        self.subtitle_progress_bar.setHidden(False)
+        if percent < 0:
+            self.subtitle_progress_bar.setRange(0, 0)
+        else:
+            self.subtitle_progress_bar.setRange(0, 100)
+            self.subtitle_progress_bar.setValue(percent)
+        self.subtitle_progress_label.setText(f"字幕解析：{message}")
+        if stage != "inference_segment":
+            self.status_label.setText(f"字幕解析：{message}")
 
     @Slot(object)
     def on_subtitle_generation_finished(self, result: SubtitleGenerationResult) -> None:
@@ -783,11 +861,21 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.status_label.setText("字幕已生成並載入")
         else:
             self.status_label.setText("字幕已生成，重新選取影片後載入")
+        self.subtitle_progress_label.setHidden(False)
+        self.subtitle_progress_bar.setHidden(False)
+        self.subtitle_progress_bar.setRange(0, 100)
+        self.subtitle_progress_bar.setValue(100)
+        self.subtitle_progress_label.setText(f"字幕解析：完成，{result.cue_count} cues")
         self.run_mvp_readiness()
 
     @Slot(str)
     def on_subtitle_generation_failed(self, message: str) -> None:
         self.status_label.setText("字幕生成失敗，請看事件欄")
+        self.subtitle_progress_label.setHidden(False)
+        self.subtitle_progress_bar.setHidden(False)
+        self.subtitle_progress_bar.setRange(0, 100)
+        self.subtitle_progress_bar.setValue(0)
+        self.subtitle_progress_label.setText("字幕解析：失敗")
         self.log(f"subtitle generation failed: {message}")
 
     @Slot()
@@ -864,17 +952,32 @@ class M1MakeupPlayerWindow(QMainWindow):
 
     def toggle_player_fullscreen(self) -> None:
         self.player_fullscreen = not self.player_fullscreen
-        set_fullscreen = getattr(self.playback_core, "set_fullscreen", None)
-        if callable(set_fullscreen) and self.playback_core.available():
-            try:
-                set_fullscreen(self.player_fullscreen)
-                return
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"mpv fullscreen toggle failed: {exc}")
-        if self.player_fullscreen:
+        self.apply_player_fullscreen(self.player_fullscreen)
+
+    def apply_player_fullscreen(self, enabled: bool) -> None:
+        self.player_fullscreen = enabled
+        for widget in (
+            self.left_panel,
+            self.detail_title,
+            self.detail_box,
+            self.writeback_summary_box,
+            self.writeback_count_label,
+            self.subtitle_title,
+            self.active_subtitle_label,
+            self.subtitle_box,
+        ):
+            widget.setHidden(enabled)
+        self.fullscreen_button.setText("離開全螢幕" if enabled else "全螢幕")
+        if enabled:
             self.showFullScreen()
         else:
             self.showNormal()
+        self.player_click_overlay.setGeometry(self.player_label.rect())
+        self.player_click_overlay.raise_()
+
+    def exit_player_fullscreen(self) -> None:
+        if self.player_fullscreen:
+            self.apply_player_fullscreen(False)
 
     def load_mpv_subtitle_track(self) -> None:
         if not self.current_mpv_subtitle_path or not self.playback_core.available():

@@ -251,7 +251,7 @@ $env:PYTHONUTF8='1'
 
 倍速播放只應改變時間軸，不應改變人聲音高。播放器啟動 mpv 時會明確帶入 `--audio-pitch-correction=yes`，避免高倍速時出現娃娃音。主畫面倍速選單提供 `0.5x` 到 `8x`，選取後會即時套用到 mpv 的 `speed` property。
 
-影片窗格支援雙擊切換全螢幕。若目前影片有 `.srt`、`.vtt`、`.ass` 或 `.ssa` sidecar，播放器會同步載入為 mpv 字幕軌，讓全螢幕時也能顯示類 YouTube CC 的畫面字幕；主畫面 `CC` 按鈕會切換 mpv `sub-visibility`。Markdown 逐字稿仍顯示在下方提詞列表，不強行轉成 mpv 字幕軌。
+影片窗格支援雙擊切換全螢幕，也可用「全螢幕」按鈕或 `F` 快捷鍵切換，`Esc` 會離開全螢幕。全螢幕切換由 Qt 外殼負責，不依賴嵌入式 mpv 自己搶全螢幕；這樣在 Windows 與 Mac 上都比較穩。若目前影片有 `.srt`、`.vtt`、`.ass` 或 `.ssa` sidecar，播放器會同步載入為 mpv 字幕軌，讓全螢幕時也能顯示類 YouTube CC 的畫面字幕；主畫面 `CC` 按鈕會切換 mpv `sub-visibility`。Markdown 逐字稿仍顯示在下方提詞列表，不強行轉成 mpv 字幕軌。
 
 ## 字幕
 
@@ -374,6 +374,8 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stab
 GUI 主流程不顯示「生成字幕」按鈕；字幕生成由播放時間軸觸發。手動生成仍可透過 CLI 或隱藏的進階維護入口呼叫，完成後會自動重載本地 sidecar。後續可以把同一個 generator 升級為 rolling-ahead 模式：播放到時間點 T 時，GPU 先吃 T 後方數分鐘音訊窗，持續把 partial cues merge 回 sidecar；目前版本先採完整 sidecar 快取作為穩定基線。
 
 播放與字幕生成共用同一條時間軸入口。按下播放時，若目前影片沒有可用字幕，或只有 `待補字幕` 佔位 cue，播放器會自動以 `playback_timeline` 觸發背景字幕生成；已有可用字幕時則只做播放切換。這讓字幕生成依附於使用者真正要看的影片，不會在瀏覽課表或選片時提前大量消耗 Notion 串流與 GPU 資源。
+
+GUI 會顯示字幕解析進度。握手、遠端音訊讀取、模型載入、語音辨識與 sidecar 寫入會分階段更新狀態列；當底層能取得音訊長度時，語音辨識階段會以目前已解析時間估算百分比。這個進度是操作回饋，不代表字幕品質或完整性宣稱。
 
 rolling-ahead 模式的分工應維持 GPU 主解析、CPU 降級與合併。CPU 適合做遠端音訊解碼、窗格排程、overlap 去重、sidecar 合併與失敗 fallback；GPU 才適合作為追播放時間線的主轉錄頭。若只用 CPU 追即時播放，長課程很容易被播放速度超車。NPU 暫不放進主線，因為目前這條 `faster-whisper` 管線直接支援的是 CPU/CUDA，去重這類結構化任務也不值得搬到 NPU。
 

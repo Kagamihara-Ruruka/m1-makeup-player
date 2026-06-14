@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Any
+from typing import Iterable, Any, Callable
 
 from .models import PlaybackRecord
 from .subtitle_pipeline_planner import RollingPipelinePlan, plan_rolling_subtitle_pipeline
@@ -31,6 +31,7 @@ DEFAULT_INITIAL_PROMPT = (
     "這是中文計算機科學與軟體工程課程逐字稿，主題可能包含 Kubernetes、資料庫、網路、"
     "作業系統、設計模式、容器、雲端、後端、API、SQL、YAML 等專有名詞。"
 )
+SubtitleProgressCallback = Callable[[str, float | None, str], None]
 
 
 class SubtitleGenerationError(RuntimeError):
@@ -241,6 +242,7 @@ def generate_subtitle_sidecar(
     media_ref: str,
     subtitle_dir: str | Path,
     options: SubtitleGenerationOptions | None = None,
+    progress_callback: SubtitleProgressCallback | None = None,
 ) -> SubtitleGenerationResult:
     options = options or SubtitleGenerationOptions()
     output_path = subtitle_output_path(record, subtitle_dir, options.output_suffix)
@@ -257,6 +259,7 @@ def generate_subtitle_sidecar(
         )
     if not media_ref.strip():
         raise SubtitleGenerationError("empty media reference")
+    emit_subtitle_progress(progress_callback, "dependency_check", 0.0, "檢查字幕生成依賴")
     dependency = subtitle_generation_dependency_status()
     if not dependency.ready:
         raise SubtitleGenerationError(dependency.message)
@@ -264,17 +267,21 @@ def generate_subtitle_sidecar(
     errors: list[str] = []
     for device, compute_type in _runtime_candidates(options):
         try:
+            emit_subtitle_progress(progress_callback, "runtime_start", 3.0, f"準備 {device}/{compute_type}")
             transcription = transcribe_media_with_timing(
                 media_ref,
                 options=options,
                 device=device,
                 compute_type=compute_type,
+                progress_callback=progress_callback,
             )
         except Exception as exc:  # noqa: BLE001 - fallback across compute backends is intentional.
             errors.append(f"{device}/{compute_type}: {exc}")
             continue
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        emit_subtitle_progress(progress_callback, "write_sidecar", 96.0, "寫入本地字幕快取")
         write_subtitle_segments(output_path, transcription.segments)
+        emit_subtitle_progress(progress_callback, "done", 100.0, "字幕解析完成")
         return SubtitleGenerationResult(
             record_key=record.stable_key,
             status="generated",
@@ -326,10 +333,12 @@ def transcribe_media_with_timing(
     options: SubtitleGenerationOptions,
     device: str,
     compute_type: str,
+    progress_callback: SubtitleProgressCallback | None = None,
 ) -> TranscriptionRun:
     from faster_whisper import WhisperModel  # type: ignore[import-not-found]
 
     ensure_cuda_runtime_dirs()
+    emit_subtitle_progress(progress_callback, "audio_decode_start", 5.0, "讀取遠端音訊串流")
     audio_result = decode_audio_window_with_timing(
         media_ref,
         max_duration_sec=options.max_duration_sec,
@@ -337,9 +346,13 @@ def transcribe_media_with_timing(
     )
     audio = audio_result.audio
     decode_elapsed_sec = audio_result.total_elapsed_sec
+    audio_duration_sec = round(audio_result.sample_count / 16_000, 3)
+    emit_subtitle_progress(progress_callback, "audio_decode_done", 20.0, f"音訊讀取完成 {audio_duration_sec:g}s")
+    emit_subtitle_progress(progress_callback, "model_load_start", 25.0, f"載入 Whisper {options.model_size}")
     model_load_started = time.perf_counter()
     model = WhisperModel(options.model_size, device=device, compute_type=compute_type)
     model_load_elapsed_sec = round(time.perf_counter() - model_load_started, 3)
+    emit_subtitle_progress(progress_callback, "model_load_done", 35.0, "模型載入完成")
     inference_started = time.perf_counter()
     kwargs = {
         "language": options.language,
@@ -367,11 +380,20 @@ def transcribe_media_with_timing(
             segments_iter = None
     if segments_iter is None:
         segments_iter, _info = model.transcribe(audio, **kwargs)
-    segments = offset_segments(generated_segments_from_faster_whisper(segments_iter), options.start_sec)
+    emit_subtitle_progress(progress_callback, "inference_start", 40.0, "開始語音辨識")
+    segments = offset_segments(
+        generated_segments_from_faster_whisper(
+            segments_iter,
+            total_duration_sec=audio_duration_sec,
+            progress_callback=progress_callback,
+        ),
+        options.start_sec,
+    )
     inference_elapsed_sec = round(time.perf_counter() - inference_started, 3)
+    emit_subtitle_progress(progress_callback, "inference_done", 95.0, f"語音辨識完成 {len(segments)} cues")
     return TranscriptionRun(
         segments=segments,
-        audio_duration_sec=round(audio_result.sample_count / 16_000, 3),
+        audio_duration_sec=audio_duration_sec,
         handshake_elapsed_sec=audio_result.handshake_elapsed_sec,
         decode_loop_elapsed_sec=audio_result.decode_loop_elapsed_sec,
         model_load_elapsed_sec=model_load_elapsed_sec,
@@ -495,8 +517,13 @@ def _concat_audio_chunks(chunks: list[Any]) -> Any:
     return np.concatenate(chunks).astype("float32", copy=False)
 
 
-def generated_segments_from_faster_whisper(segments: Iterable[object]) -> list[GeneratedSubtitleSegment]:
+def generated_segments_from_faster_whisper(
+    segments: Iterable[object],
+    total_duration_sec: float | None = None,
+    progress_callback: SubtitleProgressCallback | None = None,
+) -> list[GeneratedSubtitleSegment]:
     generated: list[GeneratedSubtitleSegment] = []
+    last_emit = 0.0
     for index, segment in enumerate(segments, 1):
         start = _segment_float(segment, "start", 0.0)
         end = _segment_float(segment, "end", start + 2.0)
@@ -506,6 +533,16 @@ def generated_segments_from_faster_whisper(segments: Iterable[object]) -> list[G
         if end <= start:
             end = start + 0.5
         generated.append(GeneratedSubtitleSegment(index=len(generated) + 1, start_sec=start, end_sec=end, text=text))
+        now = time.perf_counter()
+        if now - last_emit >= 0.5:
+            last_emit = now
+            percent = subtitle_inference_progress_percent(end, total_duration_sec)
+            emit_subtitle_progress(
+                progress_callback,
+                "inference_segment",
+                percent,
+                f"字幕解析中 {format_srt_timestamp(end).split(',')[0]}",
+            )
     return generated
 
 
@@ -593,3 +630,21 @@ def _segment_float(segment: object, field: str, default: float) -> float:
         return float(getattr(segment, field))
     except (TypeError, ValueError):
         return default
+
+
+def subtitle_inference_progress_percent(end_sec: float, total_duration_sec: float | None) -> float | None:
+    if total_duration_sec is None or total_duration_sec <= 0:
+        return None
+    ratio = max(0.0, min(1.0, float(end_sec) / float(total_duration_sec)))
+    return round(40.0 + 55.0 * ratio, 1)
+
+
+def emit_subtitle_progress(
+    callback: SubtitleProgressCallback | None,
+    stage: str,
+    percent: float | None,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    callback(stage, percent, message)

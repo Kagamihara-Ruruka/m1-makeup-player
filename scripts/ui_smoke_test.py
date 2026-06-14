@@ -139,6 +139,7 @@ def main() -> int:
         assert window.set_completion_source_button.text() == "設定完成庫"
         assert window.set_schedule_view_button.text() == "設定課表"
         assert window.play_button.text() == "播放 / 暫停"
+        assert window.fullscreen_button.text() == "全螢幕"
         assert window.complete_button.text() == "標記完成"
         assert window.subtitle_placeholder_button.text() == "建立字幕佔位"
         assert window.subtitle_placeholder_button.isHidden()
@@ -146,6 +147,8 @@ def main() -> int:
         assert window.speed_combo.findData(8.0) >= 0
         assert window.subtitle_generate_button.text() == "生成字幕"
         assert window.subtitle_generate_button.isHidden()
+        assert window.subtitle_progress_label.isHidden()
+        assert window.subtitle_progress_bar.isHidden()
         assert window.flush_writeback_button.text() == "送出完成紀錄"
         assert window.writeback_count_label.text() == "待送出完成紀錄：0"
         assert "完成回寫：乾跑模式" in window.writeback_summary_box.toPlainText()
@@ -229,9 +232,24 @@ def main() -> int:
         window.speed_combo.setCurrentIndex(window.speed_combo.findData(8.0))
         assert fake_core.speed == 8.0
         window.toggle_player_fullscreen()
-        assert fake_core.fullscreen_calls[-1] is True
+        assert window.player_fullscreen
+        assert window.fullscreen_button.text() == "離開全螢幕"
+        assert window.left_panel.isHidden()
+        assert window.detail_box.isHidden()
+        assert window.subtitle_box.isHidden()
         window.toggle_player_fullscreen()
-        assert fake_core.fullscreen_calls[-1] is False
+        assert not window.player_fullscreen
+        assert window.fullscreen_button.text() == "全螢幕"
+        assert not window.left_panel.isHidden()
+        assert not window.detail_box.isHidden()
+        assert not window.subtitle_box.isHidden()
+        window.on_subtitle_generation_progress("audio_decode_start", 5, "讀取遠端音訊串流")
+        assert not window.subtitle_progress_label.isHidden()
+        assert window.subtitle_progress_bar.value() == 5
+        assert "讀取遠端音訊串流" in window.subtitle_progress_label.text()
+        window.on_subtitle_generation_progress("inference_segment", -1, "字幕解析中")
+        assert window.subtitle_progress_bar.minimum() == 0
+        assert window.subtitle_progress_bar.maximum() == 0
         window.play_selected_item(window.list_widget.currentItem())
         assert fake_core.play_count == 1
         assert window.pending_seek_sec == 42.0
