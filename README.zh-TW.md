@@ -372,6 +372,14 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\profile_decode_concurrency.py --ke
 
 後續 rolling scheduler 的合理分工是：播放時間點 T 之前的缺口由 CPU 或低優先權 worker 補洞；T 之後的未來窗格由 GPU 優先追頭。多個無頭 worker 應負責遠端取音與切窗，不應等同於同時開很多 Whisper 模型實例。
 
+可先用排程檢視工具模擬 T 點附近的工作矩陣：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180
+```
+
+若已有播放 cache 與字幕 sidecar，可用 `--key "<stable_key>"` 讓工具讀取目前播放位置與已覆蓋字幕區間。這一步只產生 future/backfill job plan，不會啟動 Whisper，也不會寫入 Notion。
+
 ## 目前已知播放邊界
 
 Notion MCP 目前回傳的影片來源是 `file://{source: attachment...}` 內部附件標記，不是可直接交給播放器的 `https` 簽名 URL。程式已把這種來源分類為 `notion_attachment_marker`，UI 會顯示需要 resolver，不會假裝能播放。

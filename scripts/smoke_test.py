@@ -54,6 +54,10 @@ from m1_player.subtitle_generation import (  # noqa: E402
 from m1_player.subtitle_lint import lint_cues, lint_subtitle_file  # noqa: E402
 from m1_player.subtitle_manifest import build_subtitle_manifest, write_missing_markdown_placeholders  # noqa: E402
 from m1_player.subtitle_pipeline_planner import plan_rolling_subtitle_pipeline  # noqa: E402
+from m1_player.subtitle_rolling_scheduler import (  # noqa: E402
+    CoveredRange,
+    plan_rolling_subtitle_windows,
+)
 from m1_player.subtitle_resolver import SubtitleResolver, safe_filename_stem  # noqa: E402
 from m1_player.video_source import parse_video_source  # noqa: E402
 from m1_player.writeback import WritebackOutbox  # noqa: E402
@@ -349,6 +353,25 @@ def main() -> int:
     )
     assert concurrency_recommendations[0]["overall"]["window_sec"] == 60.0
     assert concurrency_recommendations[0]["overall"]["concurrency"] == 3
+    rolling_schedule = plan_rolling_subtitle_windows(
+        playback_position_sec=480.0,
+        duration_sec=900.0,
+        covered_ranges=[CoveredRange(0.0, 240.0)],
+        playback_rate=8.0,
+        window_sec=60.0,
+        overlap_sec=3.0,
+        headless_worker_count=7,
+        future_horizon_sec=180.0,
+    )
+    assert rolling_schedule.headless_worker_count == 7
+    assert rolling_schedule.backfill_partition_count == 8
+    assert len(rolling_schedule.future_jobs) == 3
+    assert len(rolling_schedule.backfill_jobs) == 4
+    assert rolling_schedule.future_jobs[0].lane == "future_gpu"
+    assert rolling_schedule.future_jobs[0].asr_device == "cuda"
+    assert rolling_schedule.future_jobs[0].decode_start_sec == 477.0
+    assert rolling_schedule.backfill_jobs[0].lane == "backfill_cpu"
+    assert rolling_schedule.backfill_jobs[0].asr_device == "cpu"
     wav_path = tmp_dir / "subtitle_decode_probe.wav"
     write_probe_wav(wav_path, duration_sec=2.0)
     decoded_probe = decode_audio_window(str(wav_path), max_duration_sec=0.5)
