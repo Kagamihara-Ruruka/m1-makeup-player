@@ -375,7 +375,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.set_token_button = QPushButton("設定 token")
         self.set_completion_source_button = QPushButton("設定完成庫")
         self.set_schedule_view_button = QPushButton("設定課表")
-        self.play_button = QPushButton("▶")
+        self.play_button = QPushButton("⏯")
         self.restart_button = QPushButton("⏮")
         self.rewind_button = QPushButton("⏪")
         self.forward_button = QPushButton("⏩")
@@ -1203,7 +1203,7 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.hide_caption_overlay()
 
     def refresh_player_button_chrome(self) -> None:
-        self.play_button.setText("▶")
+        self.play_button.setText("⏯")
         self.restart_button.setText("⏮")
         self.rewind_button.setText("⏪")
         self.forward_button.setText("⏩")

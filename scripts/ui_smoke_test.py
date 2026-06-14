@@ -147,7 +147,7 @@ def main() -> int:
         assert window.set_token_button.text() == "設定 token"
         assert window.set_completion_source_button.text() == "設定完成庫"
         assert window.set_schedule_view_button.text() == "設定課表"
-        assert window.play_button.text() == "▶"
+        assert window.play_button.text() == "⏯"
         assert window.play_button.toolTip() == "播放 / 暫停"
         assert window.restart_button.text() == "⏮"
         assert window.rewind_button.text() == "⏪"
