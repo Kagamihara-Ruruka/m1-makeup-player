@@ -135,6 +135,8 @@ def main() -> int:
                 "model_size": options.model_size,
                 "device": options.device,
                 "compute_type": options.compute_type,
+                "batch_size": options.batch_size,
+                "beam_size": options.beam_size,
                 "max_duration_sec": options.max_duration_sec,
             },
         )
@@ -175,6 +177,8 @@ def main() -> int:
             "model_size": result.model_size,
             "device": result.device,
             "compute_type": result.compute_type,
+            "batch_size": options.batch_size,
+            "beam_size": options.beam_size,
             "message": result.message,
         }
         if result.rolling_pipeline_plan:
@@ -234,7 +238,8 @@ def print_status(payload: dict[str, object], as_json: bool) -> None:
             f"inference={payload.get('inference_elapsed_sec')}s "
             f"capacity={payload.get('processing_capacity_ratio')}x "
             f"keep_up_8x={payload.get('can_keep_up_8x_without_handshake')} "
-            f"device={payload.get('device')}/{payload.get('compute_type')}"
+            f"device={payload.get('device')}/{payload.get('compute_type')} "
+            f"batch={payload.get('batch_size')} beam={payload.get('beam_size')}"
         )
         plan = payload.get("rolling_pipeline_plan")
         if isinstance(plan, dict):

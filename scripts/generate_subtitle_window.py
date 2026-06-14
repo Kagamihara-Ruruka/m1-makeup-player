@@ -99,6 +99,8 @@ def main() -> int:
         "model_size": args.model,
         "device": args.device,
         "compute_type": args.compute_type,
+        "batch_size": options.batch_size,
+        "beam_size": options.beam_size,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload)
     return 0
