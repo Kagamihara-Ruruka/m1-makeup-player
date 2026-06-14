@@ -413,13 +413,20 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.writeback_summary_box = QTextEdit()
         self.writeback_summary_box.setReadOnly(True)
         self.writeback_summary_box.setMaximumHeight(110)
+        self.player_area = QWidget()
+        self.player_area_layout = QVBoxLayout(self.player_area)
+        self.player_area_layout.setContentsMargins(0, 0, 0, 0)
+        self.player_area_layout.setSpacing(0)
         self.player_label = PlayerSurface("播放器待命")
         self.player_label.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.player_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_label.setMinimumHeight(260)
         self.player_label.setStyleSheet("border: 1px solid #555; background: #111; color: #ddd;")
-        self.caption_overlay = PlayerCaptionOverlay(self.player_label)
+        self.caption_overlay = PlayerCaptionOverlay(self.player_area)
+        self.caption_overlay.setMaximumHeight(110)
         self.player_click_overlay = PlayerDoubleClickOverlay(self.player_label)
+        self.player_area_layout.addWidget(self.player_label, 1)
+        self.player_area_layout.addWidget(self.caption_overlay)
         self.detail_box = QTextEdit()
         self.detail_box.setReadOnly(True)
         self.detail_box.setMaximumHeight(190)
@@ -467,7 +474,7 @@ class M1MakeupPlayerWindow(QMainWindow):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(self.player_label, 3)
+        right_layout.addWidget(self.player_area, 3)
         self.detail_title = QLabel("目前影片狀態")
         right_layout.addWidget(self.detail_title)
         right_layout.addWidget(self.detail_box)
@@ -1182,20 +1189,14 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.hide_caption_overlay()
             return
         self.caption_overlay.setText(value)
-        self.position_caption_overlay()
         self.caption_overlay.setHidden(False)
-        self.caption_overlay.raise_()
         self.player_click_overlay.raise_()
 
     def hide_caption_overlay(self) -> None:
         self.caption_overlay.setHidden(True)
 
     def position_caption_overlay(self) -> None:
-        width = max(260, self.player_label.width() - 96)
-        height = min(150, max(58, int(self.player_label.height() * 0.2)))
-        x_pos = max(12, int((self.player_label.width() - width) / 2))
-        y_pos = max(12, self.player_label.height() - height - 34)
-        self.caption_overlay.setGeometry(x_pos, y_pos, width, height)
+        return
 
     def mark_current_completed(self) -> None:
         if self.current_record is None:
