@@ -199,7 +199,8 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.writeback_summary_box = QTextEdit()
         self.writeback_summary_box.setReadOnly(True)
         self.writeback_summary_box.setMaximumHeight(110)
-        self.player_label = QLabel("mpv 外部播放視窗")
+        self.player_label = QLabel("播放器待命")
+        self.player_label.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.player_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_label.setMinimumHeight(260)
         self.player_label.setStyleSheet("border: 1px solid #555; background: #111; color: #ddd;")
@@ -212,11 +213,18 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.position_timer.setInterval(1000)
 
         self._build_layout()
+        self._configure_embedded_player_window()
         self._connect_signals()
         self._load_cached_records()
         self.log(f"playback core: {self.playback_core.describe()}")
         self.run_local_preflight()
         QTimer.singleShot(200, self.start_sync)
+
+    def _configure_embedded_player_window(self) -> None:
+        set_window_id = getattr(self.playback_core, "set_window_id", None)
+        if not callable(set_window_id):
+            return
+        set_window_id(int(self.player_label.winId()))
 
     def _build_layout(self) -> None:
         left = QWidget()

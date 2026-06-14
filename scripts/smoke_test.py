@@ -508,6 +508,10 @@ def main() -> int:
     mpv_args = mpv_start_args("mpv.exe", r"\\.\pipe\m1_smoke")
     assert "--audio-pitch-correction=yes" in mpv_args
     assert "--no-audio-pitch-correction" not in mpv_args
+    assert "--force-window=yes" in mpv_args
+    embedded_mpv_args = mpv_start_args("mpv.exe", r"\\.\pipe\m1_smoke", window_id=12345)
+    assert "--wid=12345" in embedded_mpv_args
+    assert "--force-window=yes" not in embedded_mpv_args
     record = PlaybackRecord.from_segment(parsed.videos[0])
     record.update_position(96, 100)
     assert record.should_complete(96, 100)

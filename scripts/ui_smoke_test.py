@@ -32,12 +32,16 @@ class FakePlaybackCore:
         self.position = 0.0
         self.duration = 120.0
         self.toggle_count = 0
+        self.window_ids: list[int] = []
 
     def available(self) -> bool:
         return True
 
     def describe(self) -> str:
         return "fake playback core"
+
+    def set_window_id(self, window_id: int) -> None:
+        self.window_ids.append(int(window_id))
 
     def load(self, url: str) -> None:
         self.loaded_url = url
@@ -106,6 +110,8 @@ def main() -> int:
             local_settings_path=str(temp / "local_settings.json"),
         )
         assert window.windowTitle() == "m_1 Notion 補課播放器"
+        assert fake_core.window_ids
+        assert fake_core.window_ids[0] > 0
         assert window.sync_button.text() == "重新同步"
         assert window.preflight_button.text() == "重新檢查"
         assert window.set_token_button.text() == "設定 token"

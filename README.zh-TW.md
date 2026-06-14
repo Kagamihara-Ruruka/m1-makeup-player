@@ -117,7 +117,7 @@ m1_player/source_readiness.py
   靜態檢查目前 cache 內的影片來源是否具備未來 token 解析所需形狀。它不呼叫 Notion、不下載、不播放，只確認來源是否可直接播放或具備 permission block id。
 
 m1_player/app_qt.py
-  PySide6 UI。它只控制同步、字幕、進度、回寫調度與 mpv 播放核心，不直接理解 Notion MCP 或 Notion API 細節。字幕區分為當前提詞大字區與可雙擊跳轉的字幕列表；選中影片會顯示來源解析、播放可行性、字幕與進度摘要。
+  PySide6 UI。它只控制同步、字幕、進度、回寫調度與 mpv 播放核心，不直接理解 Notion MCP 或 Notion API 細節。右側上方黑色區塊是嵌入式 mpv 播放器宿主；字幕區分為當前提詞大字區與可雙擊跳轉的字幕列表；選中影片會顯示來源解析、播放可行性、字幕與進度摘要。
 ```
 
 這個拆法的目標是避免大泥球。新增功能時，先判斷它屬於同步、播放、字幕、進度、回寫，還是 UI 外殼，不要把跨層邏輯塞進 UI。
@@ -208,7 +208,7 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 
 `writeback_apply_smoke.py --apply` 會建立一筆 synthetic 完成紀錄，成功後預設立刻用 Notion `in_trash` 收進垃圾桶，避免測試列留在補課完成紀錄庫。若要保留測試列，可加 `--keep`。
 
-啟動後會自動同步 Notion 課程安排。左側是補課總覽、課程影片列表、重新同步與重新檢查按鈕，右側是播放器、控制列、字幕提詞與事件紀錄。控制列包含「標記完成」與「送出完成紀錄」；前者只排入本地 outbox，後者才嘗試把 outbox 送到 Notion。「待送出完成紀錄」顯示的是本地 outbox 筆數，不代表已寫入 Notion。
+啟動後會自動同步 Notion 課程安排。左側是補課總覽、課程影片列表、重新同步與重新檢查按鈕，右側上方是嵌入式播放器、下方是控制列、字幕提詞與事件紀錄。控制列包含「標記完成」與「送出完成紀錄」；前者只排入本地 outbox，後者才嘗試把 outbox 送到 Notion。「待送出完成紀錄」顯示的是本地 outbox 筆數，不代表已寫入 Notion。
 
 「重新檢查」會同時寫入 preflight 與 MVP readiness gates 到事件紀錄。若 Notion token 或完成紀錄 data source 尚未設定，UI 會顯示外部設定未完成，而不是把它當成本地播放核心錯誤。若本地字幕尚未準備，readiness 會列為字幕 warning，影片播放仍可繼續。
 

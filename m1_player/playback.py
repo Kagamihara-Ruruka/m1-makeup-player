@@ -111,6 +111,7 @@ class MpvIpcPlaybackCore:
         self.proc: subprocess.Popen[str] | None = None
         self.pipe: Any | None = None
         self.request_id = 1
+        self.window_id: int | None = None
 
     def available(self) -> bool:
         return True
@@ -118,11 +119,15 @@ class MpvIpcPlaybackCore:
     def describe(self) -> str:
         return f"mpv IPC: {self.mpv_path}"
 
+    def set_window_id(self, window_id: int) -> None:
+        if window_id > 0:
+            self.window_id = int(window_id)
+
     def ensure_started(self) -> None:
         if self.proc and self.proc.poll() is None and self.pipe:
             return
         self.proc = subprocess.Popen(
-            mpv_start_args(self.mpv_path, self.pipe_path),
+            mpv_start_args(self.mpv_path, self.pipe_path, window_id=self.window_id),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -198,11 +203,10 @@ class MpvIpcPlaybackCore:
         self.proc = None
 
 
-def mpv_start_args(mpv_path: str, pipe_path: str) -> list[str]:
-    return [
+def mpv_start_args(mpv_path: str, pipe_path: str, window_id: int | None = None) -> list[str]:
+    args = [
         mpv_path,
         "--idle=yes",
-        "--force-window=yes",
         "--input-terminal=no",
         f"--input-ipc-server={pipe_path}",
         "--keep-open=yes",
@@ -211,6 +215,11 @@ def mpv_start_args(mpv_path: str, pipe_path: str) -> list[str]:
         "--demuxer-max-bytes=50MiB",
         "--audio-pitch-correction=yes",
     ]
+    if window_id is not None and window_id > 0:
+        args.insert(2, f"--wid={int(window_id)}")
+    else:
+        args.insert(2, "--force-window=yes")
+    return args
 
 
 def create_default_playback_core() -> PlaybackCore:
