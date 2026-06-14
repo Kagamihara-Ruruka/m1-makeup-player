@@ -108,7 +108,7 @@ class NotionScheduleSync:
     def save_records(self, sync_backend: str, parsed_pages: list[ParsedCoursePage], segments: list[VideoSegment]) -> SyncResult:
         store = ProgressStore(self.config.progress_cache)
         store.load()
-        records = store.sync_segments(segments)
+        records = store.sync_segments(segments, prune_stale=True)
         store.record_sync_metadata(sync_backend, len(parsed_pages), len(segments))
         store.save()
         return SyncResult(

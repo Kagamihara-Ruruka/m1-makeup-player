@@ -60,9 +60,11 @@ class ProgressStore:
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    def sync_segments(self, segments: list[VideoSegment]) -> list[PlaybackRecord]:
+    def sync_segments(self, segments: list[VideoSegment], *, prune_stale: bool = False) -> list[PlaybackRecord]:
         synced: list[PlaybackRecord] = []
+        active_keys: set[str] = set()
         for segment in segments:
+            active_keys.add(segment.stable_key)
             record = self.records.get(segment.stable_key)
             if record is None:
                 record = PlaybackRecord.from_segment(segment)
@@ -70,6 +72,12 @@ class ProgressStore:
             else:
                 record.refresh_metadata_from_segment(segment)
             synced.append(record)
+        if prune_stale:
+            self.records = {
+                key: record
+                for key, record in self.records.items()
+                if key in active_keys
+            }
         return synced
 
     def record_sync_metadata(self, sync_backend: str, course_page_count: int, video_segment_count: int) -> None:

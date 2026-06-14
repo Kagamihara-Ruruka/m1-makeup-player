@@ -488,6 +488,16 @@ def main() -> int:
     assert refreshed.status == LessonStatus.COMPLETED
     assert refreshed.completed_at == completed_at_before_sync
     assert refreshed.subtitle_path == r"D:\RRKAL_tools\m1-makeup-player\subtitles\lecture_part_1.srt"
+    assert len(store.records) == 2
+    pruned = store.sync_segments([refreshed_segment], prune_stale=True)
+    assert len(pruned) == 1
+    assert set(store.records) == {refreshed_segment.stable_key}
+    assert store.records[refreshed_segment.stable_key].status == LessonStatus.COMPLETED
+    assert store.records[refreshed_segment.stable_key].completed_at == completed_at_before_sync
+    assert (
+        store.records[refreshed_segment.stable_key].subtitle_path
+        == r"D:\RRKAL_tools\m1-makeup-player\subtitles\lecture_part_1.srt"
+    )
     streaming_rows = audit_streaming_sources(records)
     assert streaming_policy_passes(streaming_rows, [])
     local_record = PlaybackRecord.from_segment(parsed.videos[0])
