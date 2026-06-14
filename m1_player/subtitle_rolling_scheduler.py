@@ -38,6 +38,9 @@ class RollingSubtitleSchedule:
     headless_worker_count: int
     backfill_partition_count: int
     future_horizon_sec: float
+    future_window_strategy: str
+    future_base_window_sec: float
+    future_max_window_sec: float
     jobs: tuple[SubtitleWindowJob, ...]
 
     @property
@@ -58,6 +61,9 @@ class RollingSubtitleSchedule:
             "headless_worker_count": self.headless_worker_count,
             "backfill_partition_count": self.backfill_partition_count,
             "future_horizon_sec": self.future_horizon_sec,
+            "future_window_strategy": self.future_window_strategy,
+            "future_base_window_sec": self.future_base_window_sec,
+            "future_max_window_sec": self.future_max_window_sec,
             "future_job_count": len(self.future_jobs),
             "backfill_job_count": len(self.backfill_jobs),
             "jobs": [job_to_payload(job) for job in self.jobs],
@@ -74,6 +80,9 @@ def plan_rolling_subtitle_windows(
     overlap_sec: float = 3.0,
     headless_worker_count: int = 3,
     future_horizon_sec: float | None = None,
+    future_window_strategy: str = "fixed",
+    future_base_window_sec: float | None = None,
+    future_max_window_sec: float | None = None,
     backfill_partition_count: int | None = None,
     coverage_threshold: float = 0.85,
 ) -> RollingSubtitleSchedule:
@@ -86,6 +95,9 @@ def plan_rolling_subtitle_windows(
     partitions = max(1, int(backfill_partition_count or workers + 1))
     horizon = float(future_horizon_sec) if future_horizon_sec is not None else window * 4
     horizon = max(window, horizon)
+    strategy = normalize_future_strategy(future_window_strategy)
+    base_window = max(1.0, float(future_base_window_sec) if future_base_window_sec else window / 4)
+    max_future_window = max(base_window, float(future_max_window_sec) if future_max_window_sec else window * 2)
     ranges = normalize_covered_ranges(covered_ranges)
     jobs: list[SubtitleWindowJob] = []
     jobs.extend(
@@ -98,6 +110,9 @@ def plan_rolling_subtitle_windows(
             workers=workers,
             ranges=ranges,
             coverage_threshold=coverage_threshold,
+            strategy=strategy,
+            base_window=base_window,
+            max_future_window=max_future_window,
         )
     )
     jobs.extend(
@@ -121,6 +136,9 @@ def plan_rolling_subtitle_windows(
         headless_worker_count=workers,
         backfill_partition_count=partitions,
         future_horizon_sec=round(horizon, 3),
+        future_window_strategy=strategy,
+        future_base_window_sec=round(base_window, 3),
+        future_max_window_sec=round(max_future_window, 3),
         jobs=tuple(jobs),
     )
 
@@ -139,15 +157,23 @@ def build_future_jobs(
     workers: int,
     ranges: tuple[CoveredRange, ...],
     coverage_threshold: float,
+    strategy: str,
+    base_window: float,
+    max_future_window: float,
 ) -> list[SubtitleWindowJob]:
     jobs: list[SubtitleWindowJob] = []
     end_limit = min(duration, position + horizon)
     if end_limit <= position:
         return jobs
-    count = int(math.ceil((end_limit - position) / window))
-    for index in range(count):
-        start = position + index * window
-        end = min(end_limit, start + window)
+    spans = build_future_spans(
+        position=position,
+        end_limit=end_limit,
+        window=window,
+        strategy=strategy,
+        base_window=base_window,
+        max_future_window=max_future_window,
+    )
+    for index, (start, end) in enumerate(spans):
         if end <= start or range_is_covered(start, end, ranges, coverage_threshold):
             continue
         jobs.append(
@@ -161,10 +187,38 @@ def build_future_jobs(
                 overlap=overlap,
                 decode_worker_slot=index % workers,
                 asr_device="cuda",
-                reason="future playback head",
+                reason=f"future playback head ({strategy})",
             )
         )
     return jobs
+
+
+def build_future_spans(
+    *,
+    position: float,
+    end_limit: float,
+    window: float,
+    strategy: str,
+    base_window: float,
+    max_future_window: float,
+) -> tuple[tuple[float, float], ...]:
+    if strategy == "fixed":
+        count = int(math.ceil((end_limit - position) / window))
+        return tuple(
+            (position + index * window, min(end_limit, position + (index + 1) * window))
+            for index in range(count)
+        )
+    spans: list[tuple[float, float]] = []
+    cursor = position
+    fib_previous = 1
+    fib_current = 1
+    while cursor < end_limit:
+        length = min(max_future_window, base_window * fib_previous)
+        next_cursor = min(end_limit, cursor + length)
+        spans.append((cursor, next_cursor))
+        cursor = next_cursor
+        fib_previous, fib_current = fib_current, fib_previous + fib_current
+    return tuple(spans)
 
 
 def build_backfill_jobs(
@@ -257,6 +311,13 @@ def normalize_covered_ranges(
         else:
             merged.append(item)
     return tuple(merged)
+
+
+def normalize_future_strategy(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized not in {"fixed", "fibonacci"}:
+        raise ValueError(f"unsupported future window strategy: {value}")
+    return normalized
 
 
 def range_is_covered(

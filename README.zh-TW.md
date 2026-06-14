@@ -370,12 +370,22 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\profile_decode_concurrency.py --ke
 
 這個工具只測遠端音訊 decode，不跑 Whisper。若某個 concurrency 的 P95 decode 時間上升、錯誤率上升，或 capacity 不再增加，就代表 Notion/CDN 或本機網路已經接近應激點。
 
+Profiler 會拆出 `handshake` 與 `loop`。`handshake` 大致代表遠端 URL 開啟、協議握手、seek、stream 就緒等常數項；這部分應該在 UI 顯示成「串流預熱中」讀條，不應當作 ASR 或演算法慢。`loop` 才是實際取音與 resample 的可優化段。
+
+這套排程不宣稱改變 ASR 演算法 Big-O。體感速度提升主要來自使用者習慣假設：播放頭附近最可能被立刻需要，所以資源先押在 T 附近；T 前缺洞與遠端區間可等 worker 空閒後補齊。若 Notion/CDN 抖動導致 `handshake` 變長，UI 應維持讀條或預熱提示，而不是讓使用者誤以為字幕引擎已經就緒。
+
 後續 rolling scheduler 的合理分工是：播放時間點 T 之前的缺口由 CPU 或低優先權 worker 補洞；T 之後的未來窗格由 GPU 優先追頭。多個無頭 worker 應負責遠端取音與切窗，不應等同於同時開很多 Whisper 模型實例。
 
 可先用排程檢視工具模擬 T 點附近的工作矩陣：
 
 ```powershell
 py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180
+```
+
+若要讓 T 後方越靠近播放頭越細，可用 Fibonacci 切窗；T 前 backfill 仍維持等差切：
+
+```powershell
+py -3 D:\RRKAL_tools\m1-makeup-player\scripts\plan_rolling_subtitles.py --position-sec 480 --duration-sec 900 --playback-rate 8 --headless-workers 7 --future-horizon-sec 180 --future-window-strategy fibonacci --future-base-window-sec 15
 ```
 
 若已有播放 cache 與字幕 sidecar，可用 `--key "<stable_key>"` 讓工具讀取目前播放位置與已覆蓋字幕區間。這一步只產生 future/backfill job plan，不會啟動 Whisper，也不會寫入 Notion。

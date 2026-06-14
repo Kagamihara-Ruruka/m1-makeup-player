@@ -31,6 +31,9 @@ def main() -> int:
     parser.add_argument("--overlap-sec", type=float, default=3.0)
     parser.add_argument("--headless-workers", type=int, default=3)
     parser.add_argument("--future-horizon-sec", type=float, default=None)
+    parser.add_argument("--future-window-strategy", choices=("fixed", "fibonacci"), default="fixed")
+    parser.add_argument("--future-base-window-sec", type=float, default=None)
+    parser.add_argument("--future-max-window-sec", type=float, default=None)
     parser.add_argument("--backfill-partitions", type=int, default=None)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -64,6 +67,9 @@ def main() -> int:
         overlap_sec=args.overlap_sec,
         headless_worker_count=args.headless_workers,
         future_horizon_sec=args.future_horizon_sec,
+        future_window_strategy=args.future_window_strategy,
+        future_base_window_sec=args.future_base_window_sec,
+        future_max_window_sec=args.future_max_window_sec,
         backfill_partition_count=args.backfill_partitions,
     )
     payload = schedule.to_payload()
@@ -92,6 +98,7 @@ def print_summary(payload: dict[str, object]) -> None:
         f"T={payload['playback_position_sec']}s "
         f"rate={payload['playback_rate']}x "
         f"window={payload['window_sec']}s "
+        f"future_strategy={payload['future_window_strategy']} "
         f"future={payload['future_job_count']} "
         f"backfill={payload['backfill_job_count']} "
         f"covered_cues={payload['covered_cue_count']}"

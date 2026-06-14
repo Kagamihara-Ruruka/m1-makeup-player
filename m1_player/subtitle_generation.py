@@ -72,6 +72,15 @@ class SubtitleGenerationDependencyStatus:
 
 
 @dataclass(frozen=True)
+class AudioDecodeWindowResult:
+    audio: Any
+    handshake_elapsed_sec: float
+    decode_loop_elapsed_sec: float
+    total_elapsed_sec: float
+    sample_count: int
+
+
+@dataclass(frozen=True)
 class GeneratedSubtitleSegment:
     index: int
     start_sec: float
@@ -347,9 +356,24 @@ def decode_audio_window(
     start_sec: float = 0.0,
     sample_rate: int = 16_000,
 ) -> Any:
+    return decode_audio_window_with_timing(
+        media_ref,
+        max_duration_sec=max_duration_sec,
+        start_sec=start_sec,
+        sample_rate=sample_rate,
+    ).audio
+
+
+def decode_audio_window_with_timing(
+    media_ref: str,
+    max_duration_sec: float | None = None,
+    start_sec: float = 0.0,
+    sample_rate: int = 16_000,
+) -> AudioDecodeWindowResult:
     import av  # type: ignore[import-not-found]
     import numpy as np  # type: ignore[import-not-found]
 
+    total_started = time.perf_counter()
     container = av.open(media_ref)
     try:
         stream = next((item for item in container.streams if item.type == "audio"), None)
@@ -360,6 +384,8 @@ def decode_audio_window(
                 container.seek(int(start_sec * av.time_base), backward=True)
             except Exception:
                 pass
+        handshake_elapsed = time.perf_counter() - total_started
+        decode_started = time.perf_counter()
         resampler = av.AudioResampler(format="s16", layout="mono", rate=sample_rate)
         chunks = []
         decoded_samples = 0
@@ -371,16 +397,32 @@ def decode_audio_window(
                     if max_samples is not None:
                         remaining = max_samples - decoded_samples
                         if remaining <= 0:
-                            return _concat_audio_chunks(chunks)
+                            return _audio_decode_result(chunks, handshake_elapsed, decode_started)
                         array = array[:remaining]
                     if array.size:
                         chunks.append(array)
                         decoded_samples += int(array.size)
                     if max_samples is not None and decoded_samples >= max_samples:
-                        return _concat_audio_chunks(chunks)
-        return _concat_audio_chunks(chunks)
+                        return _audio_decode_result(chunks, handshake_elapsed, decode_started)
+        return _audio_decode_result(chunks, handshake_elapsed, decode_started)
     finally:
         container.close()
+
+
+def _audio_decode_result(
+    chunks: list[Any],
+    handshake_elapsed: float,
+    decode_started: float,
+) -> AudioDecodeWindowResult:
+    audio = _concat_audio_chunks(chunks)
+    total_elapsed = handshake_elapsed + (time.perf_counter() - decode_started)
+    return AudioDecodeWindowResult(
+        audio=audio,
+        handshake_elapsed_sec=round(handshake_elapsed, 3),
+        decode_loop_elapsed_sec=round(time.perf_counter() - decode_started, 3),
+        total_elapsed_sec=round(total_elapsed, 3),
+        sample_count=int(len(audio)),
+    )
 
 
 def _concat_audio_chunks(chunks: list[Any]) -> Any:

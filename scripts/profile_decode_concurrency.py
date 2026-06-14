@@ -15,7 +15,7 @@ from m1_player.attachment_resolver import NotionAttachmentResolver  # noqa: E402
 from m1_player.config import PROGRESS_CACHE, RESOLVED_URL_CACHE  # noqa: E402
 from m1_player.progress import ProgressStore  # noqa: E402
 from m1_player.resolved_url_cache import ResolvedUrlCache  # noqa: E402
-from m1_player.subtitle_generation import decode_audio_window  # noqa: E402
+from m1_player.subtitle_generation import decode_audio_window_with_timing  # noqa: E402
 from m1_player.video_source import parse_video_source  # noqa: E402
 
 
@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--cooldown-sec", type=float, default=1.0)
     parser.add_argument("--playback-rates", default="1,2,4,8")
     parser.add_argument("--safety-factor", type=float, default=1.35)
+    parser.add_argument("--output", help="Optional JSON output path for the profiling payload.")
     parser.add_argument(
         "--max-overall-window-sec",
         type=float,
@@ -88,6 +89,10 @@ def main() -> int:
             max_overall_window_sec=max_overall_window_sec,
         ),
     }
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -127,6 +132,8 @@ def profile_group(
     successes = [item for item in results if item["status"] == "decoded"]
     failures = [item for item in results if item["status"] != "decoded"]
     elapsed_values = [float(item["elapsed_sec"]) for item in successes]
+    handshake_values = [float(item["handshake_elapsed_sec"]) for item in successes]
+    decode_loop_values = [float(item["decode_loop_elapsed_sec"]) for item in successes]
     aggregate_audio_sec = window_sec * len(successes)
     capacity_ratio = aggregate_audio_sec / wall_elapsed if wall_elapsed > 0 else 0.0
     return {
@@ -137,7 +144,11 @@ def profile_group(
         "failure_count": len(failures),
         "error_rate": round(len(failures) / max(1, concurrency), 3),
         "mean_decode_sec": round(sum(elapsed_values) / len(elapsed_values), 3) if elapsed_values else None,
+        "mean_handshake_sec": round(sum(handshake_values) / len(handshake_values), 3) if handshake_values else None,
+        "mean_decode_loop_sec": round(sum(decode_loop_values) / len(decode_loop_values), 3) if decode_loop_values else None,
         "p95_decode_sec": percentile(elapsed_values, 95),
+        "p95_handshake_sec": percentile(handshake_values, 95),
+        "p95_decode_loop_sec": percentile(decode_loop_values, 95),
         "max_decode_sec": round(max(elapsed_values), 3) if elapsed_values else None,
         "capacity_ratio": round(capacity_ratio, 3),
         "offsets_sec": [round(value, 3) for value in offsets],
@@ -148,7 +159,7 @@ def profile_group(
 def decode_probe(media_ref: str, window_sec: float, start_sec: float, index: int) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        audio = decode_audio_window(media_ref, max_duration_sec=window_sec, start_sec=start_sec)
+        result = decode_audio_window_with_timing(media_ref, max_duration_sec=window_sec, start_sec=start_sec)
     except Exception as exc:  # noqa: BLE001 - profiler reports remote/decode failure classes.
         return {
             "index": index,
@@ -163,7 +174,9 @@ def decode_probe(media_ref: str, window_sec: float, start_sec: float, index: int
         "start_sec": round(start_sec, 3),
         "status": "decoded",
         "elapsed_sec": round(time.perf_counter() - started, 3),
-        "sample_count": int(len(audio)),
+        "handshake_elapsed_sec": result.handshake_elapsed_sec,
+        "decode_loop_elapsed_sec": result.decode_loop_elapsed_sec,
+        "sample_count": result.sample_count,
     }
 
 
@@ -206,7 +219,12 @@ def choose_decode_concurrency(
                     "concurrency": best["concurrency"],
                     "capacity_ratio": best["capacity_ratio"],
                     "p95_decode_sec": best["p95_decode_sec"],
+                    "mean_handshake_sec": best.get("mean_handshake_sec"),
+                    "p95_handshake_sec": best.get("p95_handshake_sec"),
+                    "mean_decode_loop_sec": best.get("mean_decode_loop_sec"),
+                    "p95_decode_loop_sec": best.get("p95_decode_loop_sec"),
                     "required_capacity_ratio": round(required_capacity, 3),
+                    "startup_prewarm_sec": best.get("p95_handshake_sec"),
                 }
             )
         overall = choose_overall_window(window_recommendations, max_overall_window_sec)
@@ -266,6 +284,8 @@ def print_group(row: dict[str, Any]) -> None:
         f"concurrency={row['concurrency']} "
         f"wall={row['wall_elapsed_sec']}s "
         f"mean={row['mean_decode_sec']}s "
+        f"handshake={row['mean_handshake_sec']}s "
+        f"loop={row['mean_decode_loop_sec']}s "
         f"p95={row['p95_decode_sec']}s "
         f"errors={row['failure_count']} "
         f"capacity={row['capacity_ratio']}x"
@@ -283,6 +303,7 @@ def print_recommendations(recommendations: list[dict[str, Any]]) -> None:
             f"window={overall['window_sec']}s "
             f"concurrency={overall['concurrency']} "
             f"capacity={overall['capacity_ratio']}x "
+            f"prewarm={overall.get('startup_prewarm_sec')}s "
             f"required={overall['required_capacity_ratio']}x"
             + (" window_cap_fallback" if overall.get("used_window_cap_fallback") else "")
         )

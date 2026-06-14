@@ -43,6 +43,7 @@ from m1_player.subtitle_generation import (  # noqa: E402
     GeneratedSubtitleSegment,
     SubtitleGenerationOptions,
     decode_audio_window,
+    decode_audio_window_with_timing,
     format_srt_timestamp,
     render_markdown_transcript,
     render_srt,
@@ -53,6 +54,7 @@ from m1_player.subtitle_generation import (  # noqa: E402
 )
 from m1_player.subtitle_lint import lint_cues, lint_subtitle_file  # noqa: E402
 from m1_player.subtitle_manifest import build_subtitle_manifest, write_missing_markdown_placeholders  # noqa: E402
+from m1_player.subtitle_job_queue import RollingSubtitleJobQueue  # noqa: E402
 from m1_player.subtitle_pipeline_planner import plan_rolling_subtitle_pipeline  # noqa: E402
 from m1_player.subtitle_rolling_scheduler import (  # noqa: E402
     CoveredRange,
@@ -362,20 +364,48 @@ def main() -> int:
         overlap_sec=3.0,
         headless_worker_count=7,
         future_horizon_sec=180.0,
+        future_window_strategy="fibonacci",
+        future_base_window_sec=15.0,
     )
     assert rolling_schedule.headless_worker_count == 7
     assert rolling_schedule.backfill_partition_count == 8
-    assert len(rolling_schedule.future_jobs) == 3
+    assert rolling_schedule.future_window_strategy == "fibonacci"
+    assert len(rolling_schedule.future_jobs) == 5
     assert len(rolling_schedule.backfill_jobs) == 4
     assert rolling_schedule.future_jobs[0].lane == "future_gpu"
     assert rolling_schedule.future_jobs[0].asr_device == "cuda"
     assert rolling_schedule.future_jobs[0].decode_start_sec == 477.0
+    assert rolling_schedule.future_jobs[0].end_sec == 495.0
+    assert rolling_schedule.future_jobs[-1].start_sec == 585.0
+    assert rolling_schedule.future_jobs[-1].end_sec == 660.0
     assert rolling_schedule.backfill_jobs[0].lane == "backfill_cpu"
     assert rolling_schedule.backfill_jobs[0].asr_device == "cpu"
+    job_queue = RollingSubtitleJobQueue(rolling_schedule.jobs)
+    first_claim = job_queue.claim_next("decode-worker-0")
+    second_claim = job_queue.claim_next("decode-worker-1")
+    assert first_claim is not None and first_claim.job.job_id == "future_000"
+    assert second_claim is not None and second_claim.job.job_id == "future_001"
+    job_queue.complete(first_claim.job.job_id)
+    third_claim = job_queue.claim_next("decode-worker-0")
+    assert third_claim is not None and third_claim.job.job_id == "future_002"
+    job_queue.fail(second_claim.job.job_id, "transient remote decode timeout")
+    assert job_queue.failed_count() == 1
+    job_queue.requeue_failed(second_claim.job.job_id)
+    assert job_queue.failed_count() == 0
+    assert job_queue.pending_count() > 0
+    cpu_only_queue = RollingSubtitleJobQueue(rolling_schedule.jobs)
+    cpu_claim = cpu_only_queue.claim_next("cpu-worker-0", lane="backfill_cpu")
+    assert cpu_claim is not None and cpu_claim.job.job_id == "backfill_004"
+    steal_queue = RollingSubtitleJobQueue(rolling_schedule.backfill_jobs)
+    steal_claim = steal_queue.claim_next("gpu-worker-0", lane="future_gpu", fallback_lanes=("backfill_cpu",))
+    assert steal_claim is not None and steal_claim.job.lane == "backfill_cpu"
     wav_path = tmp_dir / "subtitle_decode_probe.wav"
     write_probe_wav(wav_path, duration_sec=2.0)
     decoded_probe = decode_audio_window(str(wav_path), max_duration_sec=0.5)
     assert 7_000 <= len(decoded_probe) <= 9_000
+    timed_probe = decode_audio_window_with_timing(str(wav_path), max_duration_sec=0.5)
+    assert 7_000 <= timed_probe.sample_count <= 9_000
+    assert timed_probe.total_elapsed_sec >= timed_probe.decode_loop_elapsed_sec
     subtitle_path.unlink()
     markdown_path = subtitle_dir / "lecture_part_1.md"
     markdown_path.write_text(SAMPLE_MARKDOWN_TRANSCRIPT, encoding="utf-8", newline="\n")
