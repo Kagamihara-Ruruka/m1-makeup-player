@@ -216,7 +216,7 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 
 `setup_guide.py` 與 UI readiness 區會列出可複製命令，用來完成 token、補課紀錄 data source、schema 檢查、同步試跑、影片來源解析與 UI 啟動。它只是一張操作清單，不會自動送出 secret。
 
-「建立字幕佔位」會替目前選取的影片建立一個 timestamped Markdown sidecar，預設內容只有第一條 `待補字幕` cue。若同一段影片已經有 `.md`、`.srt` 或 `.vtt`，UI 不會覆寫既有字幕檔。
+「建立字幕佔位」是進階維護功能，主畫面預設隱藏。它會替目前選取的影片建立一個 timestamped Markdown sidecar，預設內容只有第一條 `待補字幕` cue。若同一段影片已經有 `.md`、`.srt` 或 `.vtt`，UI 不會覆寫既有字幕檔；日常流程應直接播放，讓播放時間軸自動觸發字幕生成。
 
 ## 播放進度
 

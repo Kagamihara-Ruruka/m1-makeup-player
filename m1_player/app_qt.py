@@ -181,6 +181,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.play_button = QPushButton("播放 / 暫停")
         self.complete_button = QPushButton("標記完成")
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
+        self.subtitle_placeholder_button.setHidden(True)
         self.subtitle_generate_button = QPushButton("生成字幕")
         self.flush_writeback_button = QPushButton("送出完成紀錄")
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
