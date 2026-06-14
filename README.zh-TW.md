@@ -348,6 +348,8 @@ py -3 D:\RRKAL_tools\m1-makeup-player\scripts\generate_subtitles.py --key "<stab
 
 UI 內的「生成字幕」按鈕會針對目前選取影片開背景 worker，完成後自動重載本地 sidecar。後續可以把同一個 generator 升級為 rolling-ahead 模式：播放到時間點 T 時，GPU 先吃 T 後方數分鐘音訊窗，持續把 partial cues merge 回 sidecar；目前版本先採完整 sidecar 快取作為穩定基線。
 
+播放與字幕生成共用同一條時間軸入口。按下播放時，若目前影片沒有可用字幕，或只有 `待補字幕` 佔位 cue，播放器會自動以 `playback_timeline` 觸發背景字幕生成；已有可用字幕時則只做播放切換。這讓字幕生成依附於使用者真正要看的影片，不會在瀏覽課表或選片時提前大量消耗 Notion 串流與 GPU 資源。
+
 rolling-ahead 模式的分工應維持 GPU 主解析、CPU 降級與合併。CPU 適合做遠端音訊解碼、窗格排程、overlap 去重、sidecar 合併與失敗 fallback；GPU 才適合作為追播放時間線的主轉錄頭。若只用 CPU 追即時播放，長課程很容易被播放速度超車。NPU 暫不放進主線，因為目前這條 `faster-whisper` 管線直接支援的是 CPU/CUDA，去重這類結構化任務也不值得搬到 NPU。
 
 rolling-ahead 的 decode worker 數應是動態值，不是固定值。每個音訊窗格完成後，程式會依下列量測估算 worker 數：

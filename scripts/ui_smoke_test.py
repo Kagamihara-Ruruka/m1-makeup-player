@@ -31,6 +31,7 @@ class FakePlaybackCore:
         self.seeked_to: float | None = None
         self.position = 0.0
         self.duration = 120.0
+        self.toggle_count = 0
 
     def available(self) -> bool:
         return True
@@ -49,6 +50,7 @@ class FakePlaybackCore:
         return
 
     def toggle_pause(self) -> None:
+        self.toggle_count += 1
         return
 
     def seek(self, position_sec: float) -> None:
@@ -191,6 +193,11 @@ def main() -> int:
         assert "字幕：course-a_001_test.md（1 cues）" in window.detail_box.toPlainText()
         window.highlight_subtitle(0.0)
         assert window.active_subtitle_label.text() == "待補字幕"
+        timeline_triggers = []
+        window.start_subtitle_generation = lambda trigger="manual": timeline_triggers.append(trigger)
+        window.toggle_playback()
+        assert timeline_triggers == ["playback_timeline"]
+        assert fake_core.toggle_count == 1
 
         window.mark_current_completed()
         assert window.current_record is not None

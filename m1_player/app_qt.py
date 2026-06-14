@@ -577,7 +577,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.load_subtitles(self.current_record)
         self.refresh_detail_box()
 
-    def start_subtitle_generation(self) -> None:
+    def start_subtitle_generation(self, trigger: str = "manual") -> None:
         if self.subtitle_generation_thread is not None:
             self.log("subtitle generation skipped: already running")
             return
@@ -592,6 +592,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_generate_button.setEnabled(False)
         self.log(
             "subtitle generation started: "
+            f"trigger={trigger} "
             f"model={options.model_size} language={options.language or 'auto'} "
             f"device={options.device} batch={options.batch_size}"
         )
@@ -646,10 +647,25 @@ class M1MakeupPlayerWindow(QMainWindow):
     def toggle_playback(self) -> None:
         if self.current_record is None or not self.playback_core.available():
             return
+        self.maybe_start_timeline_subtitle_generation()
         try:
             self.playback_core.toggle_pause()
         except Exception as exc:  # noqa: BLE001 - UI boundary reports playback failure.
             self.log(f"playback toggle failed: {exc}")
+
+    def maybe_start_timeline_subtitle_generation(self) -> None:
+        if self.current_record is None:
+            return
+        if self.current_playability is None or not self.current_playability.can_play:
+            return
+        if not self.current_playability.playable_url:
+            return
+        if self.subtitle_generation_thread is not None:
+            return
+        if not subtitle_cues_need_generation(self.cues):
+            return
+        self.log("timeline subtitle generation requested: playback started without usable subtitles")
+        self.start_subtitle_generation(trigger="playback_timeline")
 
     def seek_to_slider(self, value: int) -> None:
         if not self.playback_core.available():
@@ -776,6 +792,17 @@ def format_seconds(value: float) -> str:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def subtitle_cues_need_generation(cues: list[SubtitleCue]) -> bool:
+    if not cues:
+        return True
+    return all(is_placeholder_subtitle_text(cue.text) for cue in cues)
+
+
+def is_placeholder_subtitle_text(value: str) -> bool:
+    normalized = value.strip()
+    return normalized == "待補字幕"
 
 
 def writeback_status_text(result: FlushResult) -> str:
