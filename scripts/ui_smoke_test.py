@@ -14,7 +14,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from m1_player.app_qt import M1MakeupPlayerWindow, writeback_count_text, writeback_status_text  # noqa: E402
+from m1_player.app_qt import (  # noqa: E402
+    M1MakeupPlayerWindow,
+    subtitle_cues_need_generation,
+    writeback_count_text,
+    writeback_status_text,
+)
 from m1_player.attachment_resolver import AttachmentResolution, NotionAttachmentResolver  # noqa: E402
 from m1_player.config import AppConfig  # noqa: E402
 from m1_player.local_settings import load_local_settings  # noqa: E402
@@ -216,7 +221,7 @@ def main() -> int:
         )
         (config.subtitle_dir / "course-a_001_test.srt").parent.mkdir(parents=True, exist_ok=True)
         (config.subtitle_dir / "course-a_001_test.srt").write_text(
-            "1\n00:00:00,000 --> 00:00:05,000\nhello cc\n",
+            "1\n00:00:00,000 --> 00:02:00,000\nhello cc\n",
             encoding="utf-8",
         )
         window.store.records[record.stable_key] = record
@@ -285,10 +290,22 @@ def main() -> int:
         assert "字幕：course-a_001_test.md（1 cues）" in window.detail_box.toPlainText()
         window.highlight_subtitle(0.0)
         assert window.active_subtitle_label.text() == "待補字幕"
+        assert subtitle_cues_need_generation(window.cues)
+        assert window.current_playback_position_for_subtitles() == 60.0
+        assert window.current_playability is not None
+        assert window.current_playability.can_play
+        assert window.subtitle_generation_thread is None
         timeline_triggers = []
-        window.start_subtitle_generation = lambda trigger="manual": timeline_triggers.append(trigger)
+
+        def fake_timeline_generation(**kwargs: object) -> None:
+            timeline_triggers.append(kwargs)
+
+        window.start_subtitle_generation = fake_timeline_generation
         window.toggle_playback()
-        assert timeline_triggers == ["playback_timeline"]
+        assert timeline_triggers[0]["trigger"] == "playback_timeline"
+        assert timeline_triggers[0]["start_sec"] == 55.0
+        assert timeline_triggers[0]["max_duration_sec"] == 180.0
+        assert timeline_triggers[0]["overwrite"] is True
         assert fake_core.toggle_count == 1
 
         window.mark_current_completed()

@@ -820,7 +820,13 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.load_subtitles(self.current_record)
         self.refresh_detail_box()
 
-    def start_subtitle_generation(self, trigger: str = "manual") -> None:
+    def start_subtitle_generation(
+        self,
+        trigger: str = "manual",
+        start_sec: float | None = None,
+        max_duration_sec: float | None = None,
+        overwrite: bool | None = None,
+    ) -> None:
         if self.subtitle_generation_thread is not None:
             self.log("subtitle generation skipped: already running")
             return
@@ -831,11 +837,19 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.log("subtitle generation skipped: no playable stream URL")
             return
         options = subtitle_generation_options_from_env()
+        if start_sec is not None or max_duration_sec is not None or overwrite is not None:
+            options = replace(
+                options,
+                start_sec=max(0.0, float(start_sec or 0.0)),
+                max_duration_sec=max_duration_sec,
+                overwrite=options.overwrite if overwrite is None else bool(overwrite),
+            )
         self.status_label.setText("正在生成字幕，完成後會自動載入")
         self.subtitle_generate_button.setEnabled(False)
         self.log(
             "subtitle generation started: "
             f"trigger={trigger} "
+            f"start={options.start_sec:g}s max={options.max_duration_sec or 'full'}s "
             f"model={options.model_size} language={options.language or 'auto'} "
             f"device={options.device} batch={options.batch_size}"
         )
@@ -945,10 +959,36 @@ class M1MakeupPlayerWindow(QMainWindow):
             return
         if self.subtitle_generation_thread is not None:
             return
-        if not subtitle_cues_need_generation(self.cues):
+        position_sec = self.current_playback_position_for_subtitles()
+        if not subtitle_cues_need_generation(self.cues) and subtitle_cues_cover_position(self.cues, position_sec):
             return
         self.log("timeline subtitle generation requested: playback started without usable subtitles")
-        self.start_subtitle_generation(trigger="playback_timeline")
+        window_sec = timeline_subtitle_window_sec_from_env()
+        start_sec = max(0.0, position_sec - 5.0)
+        self.start_subtitle_generation(
+            trigger="playback_timeline",
+            start_sec=start_sec,
+            max_duration_sec=window_sec,
+            overwrite=True,
+        )
+
+    def current_playback_position_for_subtitles(self) -> float:
+        if (
+            self.current_record is not None
+            and self.pending_seek_key == self.current_record.stable_key
+            and self.pending_seek_sec is not None
+        ):
+            return max(0.0, float(self.pending_seek_sec))
+        if self.playback_core.available():
+            try:
+                position_sec = self.playback_core.position_sec()
+                if position_sec is not None:
+                    return float(position_sec)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"subtitle position probe failed: {exc}")
+        if self.current_record is not None:
+            return max(0.0, float(self.current_record.last_position_sec or 0.0))
+        return 0.0
 
     def seek_to_slider(self, value: int) -> None:
         if not self.playback_core.available():
@@ -1181,6 +1221,10 @@ def subtitle_cues_need_generation(cues: list[SubtitleCue]) -> bool:
     return all(is_placeholder_subtitle_text(cue.text) for cue in cues)
 
 
+def subtitle_cues_cover_position(cues: list[SubtitleCue], position_sec: float) -> bool:
+    return active_cue(cues, position_sec) is not None
+
+
 def is_placeholder_subtitle_text(value: str) -> bool:
     normalized = value.strip()
     return normalized == "待補字幕"
@@ -1214,6 +1258,13 @@ def subtitle_generation_options_from_env() -> SubtitleGenerationOptions:
         initial_prompt=os.environ.get("M1_WHISPER_INITIAL_PROMPT", DEFAULT_INITIAL_PROMPT).strip() or None,
         hotwords=os.environ.get("M1_WHISPER_HOTWORDS", DEFAULT_TECHNICAL_HOTWORDS).strip() or None,
     )
+
+
+def timeline_subtitle_window_sec_from_env() -> float:
+    try:
+        return max(30.0, float(os.environ.get("M1_TIMELINE_SUBTITLE_WINDOW_SEC", "180")))
+    except (TypeError, ValueError):
+        return 180.0
 
 
 def _positive_int(value: str | None, default: int) -> int:
