@@ -408,6 +408,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.set_completion_source_button.clicked.connect(self.prompt_completion_data_source)
         self.set_schedule_view_button.clicked.connect(self.prompt_schedule_view_url)
         self.list_widget.itemSelectionChanged.connect(self.select_current_item)
+        self.list_widget.itemDoubleClicked.connect(self.play_selected_item)
         self.play_button.clicked.connect(self.toggle_playback)
         self.complete_button.clicked.connect(self.mark_current_completed)
         self.subtitle_placeholder_button.clicked.connect(self.create_current_subtitle_placeholder)
@@ -803,6 +804,18 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.playback_core.toggle_pause()
         except Exception as exc:  # noqa: BLE001 - UI boundary reports playback failure.
             self.log(f"playback toggle failed: {exc}")
+
+    def play_selected_item(self, item: QListWidgetItem) -> None:
+        if item is not self.list_widget.currentItem():
+            self.list_widget.setCurrentItem(item)
+        if self.current_record is None or not self.playback_core.available():
+            return
+        self.maybe_start_timeline_subtitle_generation()
+        try:
+            self.apply_playback_speed()
+            self.playback_core.play()
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports playback failure.
+            self.log(f"play selected failed: {exc}")
 
     def maybe_start_timeline_subtitle_generation(self) -> None:
         if self.current_record is None:

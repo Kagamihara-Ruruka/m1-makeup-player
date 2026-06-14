@@ -32,6 +32,7 @@ class FakePlaybackCore:
         self.position = 0.0
         self.duration = 120.0
         self.toggle_count = 0
+        self.play_count = 0
         self.window_ids: list[int] = []
         self.speed = 1.0
         self.speed_calls: list[float] = []
@@ -53,6 +54,7 @@ class FakePlaybackCore:
         self.load_calls.append(url)
 
     def play(self) -> None:
+        self.play_count += 1
         return
 
     def pause(self) -> None:
@@ -230,6 +232,8 @@ def main() -> int:
         assert fake_core.fullscreen_calls[-1] is True
         window.toggle_player_fullscreen()
         assert fake_core.fullscreen_calls[-1] is False
+        window.play_selected_item(window.list_widget.currentItem())
+        assert fake_core.play_count == 1
         assert window.pending_seek_sec == 42.0
         window.poll_playback_position()
         assert fake_core.seeked_to == 42.0
