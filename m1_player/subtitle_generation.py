@@ -91,6 +91,9 @@ class GeneratedSubtitleSegment:
 @dataclass(frozen=True)
 class TranscriptionRun:
     segments: list[GeneratedSubtitleSegment]
+    audio_duration_sec: float
+    handshake_elapsed_sec: float
+    decode_loop_elapsed_sec: float
     decode_elapsed_sec: float
     inference_elapsed_sec: float
 
@@ -106,8 +109,14 @@ class SubtitleGenerationResult:
     model_size: str | None = None
     device: str | None = None
     compute_type: str | None = None
+    audio_duration_sec: float | None = None
+    handshake_elapsed_sec: float | None = None
+    decode_loop_elapsed_sec: float | None = None
     decode_elapsed_sec: float | None = None
     inference_elapsed_sec: float | None = None
+    processing_elapsed_without_handshake_sec: float | None = None
+    processing_capacity_ratio: float | None = None
+    can_keep_up_8x_without_handshake: bool | None = None
     rolling_pipeline_plan: RollingPipelinePlan | None = None
 
     @property
@@ -273,8 +282,14 @@ def generate_subtitle_sidecar(
             model_size=options.model_size,
             device=device,
             compute_type=compute_type,
+            audio_duration_sec=transcription.audio_duration_sec,
+            handshake_elapsed_sec=transcription.handshake_elapsed_sec,
+            decode_loop_elapsed_sec=transcription.decode_loop_elapsed_sec,
             decode_elapsed_sec=transcription.decode_elapsed_sec,
             inference_elapsed_sec=transcription.inference_elapsed_sec,
+            processing_elapsed_without_handshake_sec=processing_elapsed_without_handshake(transcription),
+            processing_capacity_ratio=processing_capacity_ratio(transcription),
+            can_keep_up_8x_without_handshake=can_keep_up_without_handshake(transcription, playback_rate=8.0),
             rolling_pipeline_plan=build_rolling_pipeline_plan(options, transcription),
         )
     raise SubtitleGenerationError("; ".join(errors) or "transcription failed")
@@ -288,7 +303,7 @@ def build_rolling_pipeline_plan(
         return None
     return plan_rolling_subtitle_pipeline(
         audio_window_sec=options.max_duration_sec,
-        decode_elapsed_sec=transcription.decode_elapsed_sec,
+        decode_elapsed_sec=transcription.decode_loop_elapsed_sec,
         inference_elapsed_sec=transcription.inference_elapsed_sec,
     )
 
@@ -310,9 +325,9 @@ def transcribe_media_with_timing(
 ) -> TranscriptionRun:
     from faster_whisper import WhisperModel  # type: ignore[import-not-found]
 
-    decode_started = time.perf_counter()
-    audio = decode_audio_window(media_ref, max_duration_sec=options.max_duration_sec)
-    decode_elapsed_sec = round(time.perf_counter() - decode_started, 3)
+    audio_result = decode_audio_window_with_timing(media_ref, max_duration_sec=options.max_duration_sec)
+    audio = audio_result.audio
+    decode_elapsed_sec = audio_result.total_elapsed_sec
     inference_started = time.perf_counter()
     model = WhisperModel(options.model_size, device=device, compute_type=compute_type)
     kwargs = {
@@ -345,9 +360,30 @@ def transcribe_media_with_timing(
     inference_elapsed_sec = round(time.perf_counter() - inference_started, 3)
     return TranscriptionRun(
         segments=segments,
+        audio_duration_sec=round(audio_result.sample_count / 16_000, 3),
+        handshake_elapsed_sec=audio_result.handshake_elapsed_sec,
+        decode_loop_elapsed_sec=audio_result.decode_loop_elapsed_sec,
         decode_elapsed_sec=decode_elapsed_sec,
         inference_elapsed_sec=inference_elapsed_sec,
     )
+
+
+def processing_elapsed_without_handshake(transcription: TranscriptionRun) -> float:
+    return round(transcription.decode_loop_elapsed_sec + transcription.inference_elapsed_sec, 3)
+
+
+def processing_capacity_ratio(transcription: TranscriptionRun) -> float | None:
+    processing_elapsed = processing_elapsed_without_handshake(transcription)
+    if processing_elapsed <= 0:
+        return None
+    return round(transcription.audio_duration_sec / processing_elapsed, 3)
+
+
+def can_keep_up_without_handshake(transcription: TranscriptionRun, playback_rate: float) -> bool | None:
+    ratio = processing_capacity_ratio(transcription)
+    if ratio is None:
+        return None
+    return ratio >= playback_rate
 
 
 def decode_audio_window(

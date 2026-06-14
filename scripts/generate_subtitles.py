@@ -146,8 +146,14 @@ def main() -> int:
             "subtitle_path": result.subtitle_path,
             "cue_count": result.cue_count,
             "elapsed_sec": result.elapsed_sec,
+            "audio_duration_sec": result.audio_duration_sec,
+            "handshake_elapsed_sec": result.handshake_elapsed_sec,
+            "decode_loop_elapsed_sec": result.decode_loop_elapsed_sec,
             "decode_elapsed_sec": result.decode_elapsed_sec,
             "inference_elapsed_sec": result.inference_elapsed_sec,
+            "processing_elapsed_without_handshake_sec": result.processing_elapsed_without_handshake_sec,
+            "processing_capacity_ratio": result.processing_capacity_ratio,
+            "can_keep_up_8x_without_handshake": result.can_keep_up_8x_without_handshake,
             "model_size": result.model_size,
             "device": result.device,
             "compute_type": result.compute_type,
@@ -201,8 +207,13 @@ def print_status(payload: dict[str, object], as_json: bool) -> None:
         message = (
             f"{message}; cues={payload.get('cue_count')} "
             f"elapsed={payload.get('elapsed_sec')}s "
+            f"audio={payload.get('audio_duration_sec')}s "
+            f"handshake={payload.get('handshake_elapsed_sec')}s "
+            f"loop={payload.get('decode_loop_elapsed_sec')}s "
             f"decode={payload.get('decode_elapsed_sec')}s "
             f"inference={payload.get('inference_elapsed_sec')}s "
+            f"capacity={payload.get('processing_capacity_ratio')}x "
+            f"keep_up_8x={payload.get('can_keep_up_8x_without_handshake')} "
             f"device={payload.get('device')}/{payload.get('compute_type')}"
         )
         plan = payload.get("rolling_pipeline_plan")
