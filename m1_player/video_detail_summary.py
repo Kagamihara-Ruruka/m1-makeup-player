@@ -25,9 +25,13 @@ def build_video_detail_summary(
     playability: PlayabilityStatus,
     subtitle_path: Path | None,
     cue_count: int,
+    display_position_sec: float | None = None,
+    display_progress_percent: float | None = None,
 ) -> VideoDetailSummary:
     duration_text = format_duration(record.duration_sec)
-    position_text = format_duration(record.last_position_sec)
+    position_sec = record.last_position_sec if display_position_sec is None else display_position_sec
+    progress_percent = record.progress_percent if display_progress_percent is None else display_progress_percent
+    position_text = format_duration(position_sec)
     subtitle_line = subtitle_status_line(subtitle_path, cue_count)
     completed_line = record.completed_at or "尚未完成"
     updated_line = record.updated_at or "尚未更新"
@@ -39,7 +43,7 @@ def build_video_detail_summary(
             f"課程日期：{record.course_date or 'no-date'}",
             f"段落：P{record.segment_index:02d}",
             f"補課狀態：{record.status.value}",
-            f"播放進度：{position_text} / {duration_text}（{record.progress_percent:.2f}%）",
+            f"播放進度：{position_text} / {duration_text}（{progress_percent:.2f}%）",
             f"影片來源：{source.source_kind}",
             f"來源檔名：{source.filename_hint or '未知'}",
             f"解析狀態：{resolution.status} - {resolution.reason}",

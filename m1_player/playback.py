@@ -21,6 +21,12 @@ class PlaybackCore(Protocol):
     def load(self, url: str) -> None:
         ...
 
+    def load_at(self, url: str, position_sec: float) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
+
     def play(self) -> None:
         ...
 
@@ -52,6 +58,9 @@ class PlaybackCore(Protocol):
         ...
 
     def duration_sec(self) -> float | None:
+        ...
+
+    def status_snapshot(self) -> dict[str, Any]:
         ...
 
     def close(self) -> None:
@@ -96,6 +105,12 @@ class MissingPlaybackCore:
     def load(self, url: str) -> None:
         raise RuntimeError(self.reason)
 
+    def load_at(self, url: str, position_sec: float) -> None:
+        raise RuntimeError(self.reason)
+
+    def stop(self) -> None:
+        raise RuntimeError(self.reason)
+
     def play(self) -> None:
         raise RuntimeError(self.reason)
 
@@ -128,6 +143,17 @@ class MissingPlaybackCore:
 
     def duration_sec(self) -> float | None:
         return None
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return {
+            "available": False,
+            "pause": None,
+            "idle_active": True,
+            "core_idle": True,
+            "path_loaded": False,
+            "time_pos": None,
+            "duration": None,
+        }
 
     def close(self) -> None:
         return
@@ -178,6 +204,14 @@ class MpvIpcPlaybackCore:
         self.ensure_started()
         self.command(["loadfile", url, "replace"])
 
+    def load_at(self, url: str, position_sec: float) -> None:
+        self.ensure_started()
+        self.command(["loadfile", url, "replace", -1, {"start": f"{max(0.0, float(position_sec)):g}"}])
+
+    def stop(self) -> None:
+        self.ensure_started()
+        self.command(["stop"])
+
     def play(self) -> None:
         self.set_property("pause", False)
 
@@ -216,6 +250,17 @@ class MpvIpcPlaybackCore:
 
     def duration_sec(self) -> float | None:
         return _as_float(self.get_property("duration"))
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return {
+            "available": True,
+            "pause": self.get_property("pause"),
+            "idle_active": bool(self.get_property("idle-active")),
+            "core_idle": bool(self.get_property("core-idle")),
+            "path_loaded": bool(self.get_property("path")),
+            "time_pos": self.position_sec(),
+            "duration": self.duration_sec(),
+        }
 
     def get_property(self, name: str) -> Any:
         result = self.command(["get_property", name], allow_property_unavailable=True)

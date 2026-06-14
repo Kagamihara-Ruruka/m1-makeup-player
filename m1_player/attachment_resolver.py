@@ -52,12 +52,12 @@ class NotionAttachmentResolver:
         self.block_fetcher = block_fetcher
         self.timeout_sec = timeout_sec
 
-    def resolve(self, source: VideoSourceInfo) -> AttachmentResolution:
+    def resolve(self, source: VideoSourceInfo, *, force_refresh: bool = False) -> AttachmentResolution:
         if source.playable_url:
             return AttachmentResolution(source.playable_url, "resolved", "source already playable")
         if source.source_kind != "notion_attachment_marker":
             return AttachmentResolution(None, "unsupported", f"unsupported source kind: {source.source_kind}")
-        if self.cache:
+        if self.cache and not force_refresh:
             self.cache.load()
             entry = self.cache.get_valid(source)
             if entry:

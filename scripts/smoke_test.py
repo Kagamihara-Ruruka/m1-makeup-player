@@ -39,13 +39,22 @@ from m1_player.setup_guide import build_setup_guide  # noqa: E402
 from m1_player.source_readiness import audit_source_readiness, source_readiness_passes, summarize_source_readiness  # noqa: E402
 from m1_player.streaming_policy import audit_streaming_sources, streaming_policy_passes  # noqa: E402
 from m1_player.sync_service import NotionScheduleSync  # noqa: E402
+from m1_player import subtitle_generation as subtitle_generation_module  # noqa: E402
 from m1_player.subtitle import active_cue, parse_markdown_transcript, parse_srt_or_vtt  # noqa: E402
+from m1_player.subtitle_controller import (  # noqa: E402
+    SubtitleController,
+    subtitle_cues_cover_position,
+    subtitle_cues_need_generation,
+)
 from m1_player.subtitle_generation import (  # noqa: E402
     GeneratedSubtitleSegment,
+    SubtitleGenerationDependencyStatus,
     SubtitleGenerationOptions,
+    TranscriptionRun,
     decode_audio_window,
     decode_audio_window_with_timing,
     format_srt_timestamp,
+    generate_subtitle_sidecar,
     render_markdown_transcript,
     render_srt,
     render_vtt,
@@ -55,8 +64,11 @@ from m1_player.subtitle_generation import (  # noqa: E402
 )
 from m1_player.subtitle_lint import lint_cues, lint_subtitle_file  # noqa: E402
 from m1_player.subtitle_manifest import build_subtitle_manifest, write_missing_markdown_placeholders  # noqa: E402
+from m1_player.subtitle_merge import merge_subtitle_files  # noqa: E402
+from m1_player.subtitle_segmentation import split_long_subtitle_segments, split_subtitle_text  # noqa: E402
 from m1_player.subtitle_job_queue import RollingSubtitleJobQueue  # noqa: E402
 from m1_player.subtitle_pipeline_planner import plan_rolling_subtitle_pipeline  # noqa: E402
+from m1_player.subtitle_quality import filter_hallucinated_segments, is_repetitive_hallucination  # noqa: E402
 from m1_player.subtitle_rolling_scheduler import (  # noqa: E402
     CoveredRange,
     plan_rolling_subtitle_windows,
@@ -299,8 +311,41 @@ def main() -> int:
     assert rendered_vtt.startswith("WEBVTT")
     rendered_md = render_markdown_transcript(generated_segments)
     assert "[00:00:00.000 --> 00:00:02.500] 第一段字幕" in rendered_md
+    long_segment = GeneratedSubtitleSegment(
+        index=1,
+        start_sec=100.0,
+        end_sec=140.0,
+        text="這個我問一下,上面這行命令什麼意思,這是我們的虛擬電腦,課程上到今天了,請問一下你們適應了嗎?",
+    )
+    split_pieces = split_subtitle_text(long_segment.text, max_chars=24)
+    assert len(split_pieces) >= 4
+    split_segments = split_long_subtitle_segments([long_segment], max_chars=24, max_duration_sec=7.0)
+    assert len(split_segments) >= 4
+    assert split_segments[0].index == 1
+    assert split_segments[0].start_sec == 100.0
+    assert split_segments[-1].end_sec == 140.0
+    assert all(item.start_sec < item.end_sec for item in split_segments)
+    assert all(a.end_sec <= b.start_sec + 0.001 for a, b in zip(split_segments, split_segments[1:]))
     subtitle_dir = tmp_dir / "subtitles"
     subtitle_dir.mkdir(exist_ok=True)
+    merge_a = subtitle_dir / "merge_a.srt"
+    merge_b = subtitle_dir / "merge_b.srt"
+    merge_out = subtitle_dir / "merge_rolling.srt"
+    merge_a.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nalpha\n\n"
+        "2\n00:00:02,000 --> 00:00:04,000\nbeta\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merge_b.write_text(
+        "1\n00:00:02,000 --> 00:00:04,000\nbeta\n\n"
+        "2\n00:00:04,000 --> 00:00:06,000\ngamma\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merged_cues = merge_subtitle_files(merge_out, [merge_b, merge_a])
+    assert [cue.text for cue in merged_cues] == ["alpha", "beta", "gamma"]
+    assert "00:00:04,000 --> 00:00:06,000" in merge_out.read_text(encoding="utf-8")
     subtitle_path = subtitle_dir / f"{parsed.videos[0].stable_key.replace(':', '_')}.srt"
     subtitle_path.write_text(SAMPLE_SRT, encoding="utf-8", newline="\n")
     lint_result = lint_subtitle_file(subtitle_path)
@@ -321,13 +366,135 @@ def main() -> int:
     generated_lint = lint_subtitle_file(generated_output_path)
     assert generated_lint.passes
     assert generated_lint.cue_count == 2
+    assert not subtitle_cues_need_generation(found_cues)
+    assert subtitle_cues_cover_position(found_cues, 1.0)
+    subtitle_controller = SubtitleController(
+        options_factory=lambda: SubtitleGenerationOptions(device="cpu", compute_type="int8"),
+        window_sec_factory=lambda: 45.0,
+    )
+    assert subtitle_controller.timeline_plan(subtitle_record.stable_key, found_cues, 1.0) is None
+    first_plan = subtitle_controller.timeline_plan(
+        subtitle_record.stable_key,
+        [],
+        60.0,
+        trigger="playback_timeline",
+    )
+    assert first_plan is not None
+    assert first_plan.request.start_sec == 55.0
+    assert first_plan.request.max_duration_sec == 45.0
+    assert first_plan.options.start_sec == 55.0
+    assert first_plan.options.max_duration_sec == 45.0
+    assert first_plan.options.output_stem_suffix == f"g{first_plan.request.generation_id:05d}"
+    dispatch_first = subtitle_controller.dispatch_plan(first_plan)
+    assert dispatch_first.action == "start"
+    second_plan = subtitle_controller.timeline_plan(
+        subtitle_record.stable_key,
+        [],
+        90.0,
+        trigger="seek_timeline",
+    )
+    assert second_plan is not None
+    assert second_plan.request.generation_id > first_plan.request.generation_id
+    assert not subtitle_controller.accepts_result(
+        first_plan.request.generation_id,
+        subtitle_record.stable_key,
+        current_record_key=subtitle_record.stable_key,
+    )
+    assert subtitle_controller.accepts_result(
+        second_plan.request.generation_id,
+        subtitle_record.stable_key,
+        current_record_key=subtitle_record.stable_key,
+    )
+    assert not subtitle_controller.accepts_result(
+        second_plan.request.generation_id,
+        subtitle_record.stable_key,
+        current_record_key="another-video",
+    )
+    dispatch_second = subtitle_controller.dispatch_plan(second_plan)
+    assert dispatch_second.action == "defer"
+    assert subtitle_controller.running_generation_id == first_plan.request.generation_id
+    assert subtitle_controller.deferred_plan == second_plan
+    third_plan = subtitle_controller.timeline_plan(
+        subtitle_record.stable_key,
+        [],
+        120.0,
+        trigger="seek_timeline",
+    )
+    assert third_plan is not None
+    dispatch_third = subtitle_controller.dispatch_plan(third_plan)
+    assert dispatch_third.action == "defer"
+    assert subtitle_controller.deferred_plan == third_plan
+    next_plan = subtitle_controller.finish_running_generation(
+        first_plan.request.generation_id,
+        current_record_key=subtitle_record.stable_key,
+    )
+    assert next_plan == third_plan
+    assert subtitle_controller.running_generation_id == third_plan.request.generation_id
+    assert subtitle_controller.deferred_plan is None
+    subtitle_controller.finish_running_generation(
+        third_plan.request.generation_id,
+        current_record_key=subtitle_record.stable_key,
+    )
+    assert subtitle_controller.running_generation_id is None
     assert SubtitleGenerationOptions().model_size == "medium"
     assert SubtitleGenerationOptions().language == "zh"
-    assert "Kubernetes" in (SubtitleGenerationOptions().hotwords or "")
+    assert SubtitleGenerationOptions().hotwords is None
+    assert SubtitleGenerationOptions().initial_prompt is None
+    hallucinated_text = "資料庫、網路、作業系統、設計模式、網路、設計模式、網路、設計模式、網路、設計模式、網路、設計模式"
+    assert is_repetitive_hallucination(hallucinated_text)
+    assert is_repetitive_hallucination("請只轉寫實際聽到的語音。")
+    assert not is_repetitive_hallucination("這一段在說 Kubernetes 裡面的 Pod 如何被 scheduler 分配到 worker node。")
+    assert not filter_hallucinated_segments(
+        [GeneratedSubtitleSegment(1, 0.0, 10.0, hallucinated_text)]
+    )
     dependency_status = subtitle_generation_dependency_status()
     assert isinstance(dependency_status.ready, bool)
     assert isinstance(dependency_status.cuda_runtime_available, bool)
     assert dependency_status.message
+    empty_record = PlaybackRecord(
+        stable_key="empty-window:001",
+        video_name="empty-window.mp4",
+        course_page_url="https://example.com/empty",
+        course_date=None,
+        segment_index=1,
+        video_block_ref="empty",
+        source_ref="file:///empty-window.mp4",
+    )
+    empty_output_path = subtitle_output_path(empty_record, subtitle_dir, ".srt")
+    empty_output_path.write_text("\n", encoding="utf-8", newline="\n")
+    original_transcribe_media_with_timing = subtitle_generation_module.transcribe_media_with_timing
+
+    def fake_empty_transcription(*_args: object, **_kwargs: object) -> TranscriptionRun:
+        return TranscriptionRun(
+            segments=[],
+            audio_duration_sec=30.0,
+            handshake_elapsed_sec=1.0,
+            decode_loop_elapsed_sec=2.0,
+            model_load_elapsed_sec=0.5,
+            decode_elapsed_sec=3.0,
+            inference_elapsed_sec=0.2,
+        )
+
+    original_dependency_status = subtitle_generation_module.subtitle_generation_dependency_status
+    subtitle_generation_module.transcribe_media_with_timing = fake_empty_transcription
+    subtitle_generation_module.subtitle_generation_dependency_status = lambda: SubtitleGenerationDependencyStatus(
+        faster_whisper_available=True,
+        cuda_runtime_available=False,
+    )
+    try:
+        no_cues_result = generate_subtitle_sidecar(
+            empty_record,
+            "fake-media-url",
+            subtitle_dir,
+            SubtitleGenerationOptions(device="cpu", compute_type="int8", overwrite=True, max_duration_sec=30.0),
+        )
+    finally:
+        subtitle_generation_module.transcribe_media_with_timing = original_transcribe_media_with_timing
+        subtitle_generation_module.subtitle_generation_dependency_status = original_dependency_status
+    assert no_cues_result.status == "no_cues"
+    assert no_cues_result.subtitle_path is None
+    assert no_cues_result.cue_count == 0
+    assert not empty_output_path.exists()
     rolling_plan = plan_rolling_subtitle_pipeline(
         audio_window_sec=5.0,
         decode_elapsed_sec=9.4,
@@ -336,6 +503,16 @@ def main() -> int:
     assert rolling_plan.recommended_decode_workers == 3
     assert rolling_plan.recommended_gpu_workers == 1
     assert rolling_plan.can_keep_up
+    high_speed_remote_plan = plan_rolling_subtitle_pipeline(
+        audio_window_sec=180.0,
+        decode_elapsed_sec=48.0,
+        inference_elapsed_sec=9.0,
+        playback_rate=8.0,
+        max_decode_workers=1,
+    )
+    assert high_speed_remote_plan.expected_pipeline_capacity_ratio < 8.0
+    assert high_speed_remote_plan.recommended_decode_workers == 1
+    assert not high_speed_remote_plan.can_keep_up
     saturated_plan = plan_rolling_subtitle_pipeline(
         audio_window_sec=5.0,
         decode_elapsed_sec=30.0,

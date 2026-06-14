@@ -4,6 +4,7 @@ import importlib.util
 import os
 import shutil
 import site
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -19,18 +20,8 @@ from .subtitle_resolver import safe_filename_stem
 SUPPORTED_GENERATED_SUFFIXES = (".srt", ".vtt", ".md")
 CUDA_RUNTIME_DIRS_ENV = "M1_CUDA_RUNTIME_DIRS"
 _CUDA_DLL_DIRECTORY_HANDLES: list[object] = []
-DEFAULT_TECHNICAL_HOTWORDS = (
-    "Kubernetes, K8S, k8s, kubectl, kubelet, kube-proxy, Pod, Deployment, Service, Ingress, "
-    "ConfigMap, Secret, StatefulSet, DaemonSet, Job, CronJob, CoreDNS, etcd, control plane, "
-    "worker node, container, image, namespace, YAML, Helm, Postgres, PostgreSQL, API Server, "
-    "MySQL, SQL, transaction, index, query, schema, Docker, Linux, TCP, IP, HTTP, DNS, TLS, "
-    "load balancer, cache, message queue, Redis, API, REST, RPC, object oriented, design pattern, "
-    "factory, strategy, observer, singleton, thread, process, memory, filesystem, compiler"
-)
-DEFAULT_INITIAL_PROMPT = (
-    "這是中文計算機科學與軟體工程課程逐字稿，主題可能包含 Kubernetes、資料庫、網路、"
-    "作業系統、設計模式、容器、雲端、後端、API、SQL、YAML 等專有名詞。"
-)
+DEFAULT_TECHNICAL_HOTWORDS: str | None = None
+DEFAULT_INITIAL_PROMPT: str | None = None
 SubtitleProgressCallback = Callable[[str, float | None, str], None]
 
 
@@ -49,6 +40,7 @@ class SubtitleGenerationOptions:
     vad_filter: bool = True
     overwrite: bool = False
     output_suffix: str = ".srt"
+    output_stem_suffix: str | None = None
     max_duration_sec: float | None = None
     start_sec: float = 0.0
     initial_prompt: str | None = DEFAULT_INITIAL_PROMPT
@@ -222,9 +214,12 @@ def subtitle_output_path(
     record: PlaybackRecord,
     subtitle_dir: str | Path,
     suffix: str = ".srt",
+    stem_suffix: str | None = None,
 ) -> Path:
     suffix = normalize_generated_suffix(suffix)
     stable_stem = safe_filename_stem(record.stable_key.replace(":", "_"))
+    if stem_suffix:
+        stable_stem = f"{stable_stem}_{safe_filename_stem(stem_suffix)}"
     return Path(subtitle_dir) / f"{stable_stem}{suffix}"
 
 
@@ -245,18 +240,21 @@ def generate_subtitle_sidecar(
     progress_callback: SubtitleProgressCallback | None = None,
 ) -> SubtitleGenerationResult:
     options = options or SubtitleGenerationOptions()
-    output_path = subtitle_output_path(record, subtitle_dir, options.output_suffix)
+    output_path = subtitle_output_path(record, subtitle_dir, options.output_suffix, options.output_stem_suffix)
     started = time.perf_counter()
     if output_path.exists() and not options.overwrite:
         cues = load_subtitle(output_path)
-        return SubtitleGenerationResult(
-            record_key=record.stable_key,
-            status="skipped_existing",
-            subtitle_path=str(output_path),
-            cue_count=len(cues),
-            elapsed_sec=round(time.perf_counter() - started, 3),
-            message="subtitle sidecar already exists",
-        )
+        if not cues:
+            output_path.unlink(missing_ok=True)
+        else:
+            return SubtitleGenerationResult(
+                record_key=record.stable_key,
+                status="skipped_existing",
+                subtitle_path=str(output_path),
+                cue_count=len(cues),
+                elapsed_sec=round(time.perf_counter() - started, 3),
+                message="subtitle sidecar already exists",
+            )
     if not media_ref.strip():
         raise SubtitleGenerationError("empty media reference")
     emit_subtitle_progress(progress_callback, "dependency_check", 0.0, "檢查字幕生成依賴")
@@ -278,6 +276,31 @@ def generate_subtitle_sidecar(
         except Exception as exc:  # noqa: BLE001 - fallback across compute backends is intentional.
             errors.append(f"{device}/{compute_type}: {exc}")
             continue
+        if not transcription.segments:
+            if output_path.exists():
+                output_path.unlink(missing_ok=True)
+            emit_subtitle_progress(progress_callback, "no_cues", 100.0, "此時間窗沒有辨識到字幕")
+            return SubtitleGenerationResult(
+                record_key=record.stable_key,
+                status="no_cues",
+                subtitle_path=None,
+                cue_count=0,
+                elapsed_sec=round(time.perf_counter() - started, 3),
+                message="no subtitle cues recognized in requested window",
+                model_size=options.model_size,
+                device=device,
+                compute_type=compute_type,
+                audio_duration_sec=transcription.audio_duration_sec,
+                handshake_elapsed_sec=transcription.handshake_elapsed_sec,
+                decode_loop_elapsed_sec=transcription.decode_loop_elapsed_sec,
+                model_load_elapsed_sec=transcription.model_load_elapsed_sec,
+                decode_elapsed_sec=transcription.decode_elapsed_sec,
+                inference_elapsed_sec=transcription.inference_elapsed_sec,
+                processing_elapsed_without_handshake_sec=processing_elapsed_without_handshake(transcription),
+                processing_capacity_ratio=processing_capacity_ratio(transcription),
+                can_keep_up_8x_without_handshake=can_keep_up_without_handshake(transcription, playback_rate=8.0),
+                rolling_pipeline_plan=build_rolling_pipeline_plan(options, transcription),
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         emit_subtitle_progress(progress_callback, "write_sidecar", 96.0, "寫入本地字幕快取")
         write_subtitle_segments(output_path, transcription.segments)
@@ -314,7 +337,7 @@ def build_rolling_pipeline_plan(
         return None
     return plan_rolling_subtitle_pipeline(
         audio_window_sec=options.max_duration_sec,
-        decode_elapsed_sec=transcription.decode_loop_elapsed_sec,
+        decode_elapsed_sec=transcription.decode_elapsed_sec,
         inference_elapsed_sec=transcription.inference_elapsed_sec,
     )
 
@@ -336,6 +359,8 @@ def transcribe_media_with_timing(
     progress_callback: SubtitleProgressCallback | None = None,
 ) -> TranscriptionRun:
     from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+    from .subtitle_quality import filter_hallucinated_segments
+    from .subtitle_segmentation import split_long_subtitle_segments
 
     ensure_cuda_runtime_dirs()
     emit_subtitle_progress(progress_callback, "audio_decode_start", 5.0, "讀取遠端音訊串流")
@@ -381,13 +406,13 @@ def transcribe_media_with_timing(
     if segments_iter is None:
         segments_iter, _info = model.transcribe(audio, **kwargs)
     emit_subtitle_progress(progress_callback, "inference_start", 40.0, "開始語音辨識")
-    segments = offset_segments(
-        generated_segments_from_faster_whisper(
-            segments_iter,
-            total_duration_sec=audio_duration_sec,
-            progress_callback=progress_callback,
-        ),
-        options.start_sec,
+    raw_segments = generated_segments_from_faster_whisper(
+        segments_iter,
+        total_duration_sec=audio_duration_sec,
+        progress_callback=progress_callback,
+    )
+    segments = filter_hallucinated_segments(
+        split_long_subtitle_segments(offset_segments(raw_segments, options.start_sec))
     )
     inference_elapsed_sec = round(time.perf_counter() - inference_started, 3)
     emit_subtitle_progress(progress_callback, "inference_done", 95.0, f"語音辨識完成 {len(segments)} cues")
@@ -449,6 +474,110 @@ def decode_audio_window(
 
 
 def decode_audio_window_with_timing(
+    media_ref: str,
+    max_duration_sec: float | None = None,
+    start_sec: float = 0.0,
+    sample_rate: int = 16_000,
+) -> AudioDecodeWindowResult:
+    if should_use_ffmpeg_audio_decoder(media_ref):
+        try:
+            return decode_audio_window_with_ffmpeg(
+                media_ref,
+                max_duration_sec=max_duration_sec,
+                start_sec=start_sec,
+                sample_rate=sample_rate,
+            )
+        except Exception:
+            if os.environ.get("M1_AUDIO_DECODER", "").strip().lower() == "ffmpeg":
+                raise
+            # Fall back to PyAV when the bundled ffmpeg path is not usable on this machine.
+            pass
+    return decode_audio_window_with_pyav(
+        media_ref,
+        max_duration_sec=max_duration_sec,
+        start_sec=start_sec,
+        sample_rate=sample_rate,
+    )
+
+
+def should_use_ffmpeg_audio_decoder(media_ref: str) -> bool:
+    mode = os.environ.get("M1_AUDIO_DECODER", "auto").strip().lower()
+    if mode == "pyav":
+        return False
+    if mode == "ffmpeg":
+        return True
+    return media_ref.strip().lower().startswith(("http://", "https://"))
+
+
+def decode_audio_window_with_ffmpeg(
+    media_ref: str,
+    max_duration_sec: float | None = None,
+    start_sec: float = 0.0,
+    sample_rate: int = 16_000,
+) -> AudioDecodeWindowResult:
+    import numpy as np  # type: ignore[import-not-found]
+
+    ffmpeg = ffmpeg_executable()
+    if ffmpeg is None:
+        raise SubtitleGenerationError("ffmpeg executable is not available")
+    total_started = time.perf_counter()
+    args = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+    ]
+    if start_sec > 0:
+        args.extend(["-ss", f"{float(start_sec):.3f}"])
+    args.extend(["-i", media_ref])
+    if max_duration_sec and max_duration_sec > 0:
+        args.extend(["-t", f"{float(max_duration_sec):.3f}"])
+    args.extend(["-vn", "-ac", "1", "-ar", str(int(sample_rate)), "-f", "f32le", "pipe:1"])
+    timeout_sec = ffmpeg_decode_timeout_sec(max_duration_sec)
+    proc = subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout_sec,
+        check=False,
+    )
+    elapsed = time.perf_counter() - total_started
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise SubtitleGenerationError(f"ffmpeg audio decode failed: {stderr[-500:]}")
+    audio = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    return AudioDecodeWindowResult(
+        audio=audio,
+        handshake_elapsed_sec=0.0,
+        decode_loop_elapsed_sec=round(elapsed, 3),
+        total_elapsed_sec=round(elapsed, 3),
+        sample_count=int(len(audio)),
+    )
+
+
+def ffmpeg_executable() -> str | None:
+    configured = os.environ.get("M1_FFMPEG_PATH")
+    if configured and Path(configured).exists():
+        return configured
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg  # type: ignore[import-not-found]
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def ffmpeg_decode_timeout_sec(max_duration_sec: float | None) -> float:
+    if max_duration_sec and max_duration_sec > 0:
+        return max(120.0, float(max_duration_sec) * 4.0)
+    return 1800.0
+
+
+def decode_audio_window_with_pyav(
     media_ref: str,
     max_duration_sec: float | None = None,
     start_sec: float = 0.0,
