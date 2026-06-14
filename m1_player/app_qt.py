@@ -357,7 +357,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_generation_thread: QThread | None = None
         self.subtitle_generation_worker: SubtitleGenerationWorker | None = None
 
-        self.setWindowTitle("m_1 Notion 補課播放器")
+        self.setWindowTitle("BDDE38補課系統 by RRK")
         self.resize(1280, 760)
 
         self.status_label = QLabel("啟動中")
@@ -375,7 +375,10 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.set_token_button = QPushButton("設定 token")
         self.set_completion_source_button = QPushButton("設定完成庫")
         self.set_schedule_view_button = QPushButton("設定課表")
-        self.play_button = QPushButton("播放 / 暫停")
+        self.play_button = QPushButton("播放")
+        self.restart_button = QPushButton("從頭")
+        self.rewind_button = QPushButton("-15")
+        self.forward_button = QPushButton("+15")
         self.fullscreen_button = QPushButton("全螢幕")
         self.complete_button = QPushButton("標記完成")
         self.subtitle_placeholder_button = QPushButton("建立字幕佔位")
@@ -393,7 +396,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         for label, speed in playback_speed_options():
             self.speed_combo.addItem(label, speed)
         self.speed_combo.setCurrentIndex(2)
-        self.cc_button = QPushButton("CC 開")
+        self.cc_button = QPushButton("CC")
         self.cc_button.setCheckable(True)
         self.cc_button.setChecked(True)
         self.cc_button.setEnabled(False)
@@ -401,6 +404,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.position_slider.setRange(0, 0)
         self.position_time_label = QLabel("00:00 / --:--")
         self.position_time_label.setMinimumWidth(110)
+        self.playback_hint_label = QLabel("選取影片後，按播放會接續上次進度；按從頭播放會回到 00:00。")
+        self.playback_hint_label.setWordWrap(True)
+        self.playback_hint_label.setStyleSheet("color: #b8b8b8;")
         self.active_subtitle_label = QLabel("尚未載入字幕")
         self.active_subtitle_label.setWordWrap(True)
         self.active_subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -414,6 +420,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.writeback_summary_box.setReadOnly(True)
         self.writeback_summary_box.setMaximumHeight(110)
         self.player_area = QWidget()
+        self.player_area.setStyleSheet("background: #050505; border: 1px solid #222;")
         self.player_area_layout = QVBoxLayout(self.player_area)
         self.player_area_layout.setContentsMargins(0, 0, 0, 0)
         self.player_area_layout.setSpacing(0)
@@ -475,19 +482,28 @@ class M1MakeupPlayerWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self.player_area, 3)
-        self.detail_title = QLabel("目前影片狀態")
-        right_layout.addWidget(self.detail_title)
-        right_layout.addWidget(self.detail_box)
+        self.playback_controls_panel = QWidget()
+        self.playback_controls_panel.setStyleSheet(
+            "QWidget { background: rgba(20, 20, 20, 220); border: 1px solid #333; border-radius: 8px; }"
+            "QPushButton { padding: 5px 10px; }"
+            "QSlider { min-height: 20px; }"
+        )
+        playback_controls_layout = QVBoxLayout(self.playback_controls_panel)
+        playback_controls_layout.setContentsMargins(10, 8, 10, 8)
+        playback_controls_layout.setSpacing(6)
         position_row = QWidget()
         position_layout = QHBoxLayout(position_row)
         position_layout.setContentsMargins(0, 0, 0, 0)
         position_layout.addWidget(self.position_slider, 1)
         position_layout.addWidget(self.position_time_label)
-        right_layout.addWidget(position_row)
+        playback_controls_layout.addWidget(position_row)
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.addWidget(self.play_button)
+        controls_layout.addWidget(self.restart_button)
+        controls_layout.addWidget(self.rewind_button)
+        controls_layout.addWidget(self.forward_button)
         controls_layout.addWidget(self.fullscreen_button)
         controls_layout.addWidget(QLabel("倍速"))
         controls_layout.addWidget(self.speed_combo)
@@ -497,9 +513,14 @@ class M1MakeupPlayerWindow(QMainWindow):
         controls_layout.addWidget(self.subtitle_generate_button)
         controls_layout.addWidget(self.flush_writeback_button)
         controls_layout.addWidget(self.writeback_count_label)
-        right_layout.addWidget(controls)
+        playback_controls_layout.addWidget(controls)
+        self.player_area_layout.addWidget(self.playback_controls_panel)
+        right_layout.addWidget(self.playback_hint_label)
         right_layout.addWidget(self.subtitle_progress_label)
         right_layout.addWidget(self.subtitle_progress_bar)
+        self.detail_title = QLabel("目前影片狀態")
+        right_layout.addWidget(self.detail_title)
+        right_layout.addWidget(self.detail_box)
         right_layout.addWidget(self.writeback_summary_box)
         self.subtitle_title = QLabel("字幕提詞")
         right_layout.addWidget(self.subtitle_title)
@@ -527,6 +548,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.list_widget.itemSelectionChanged.connect(self.select_current_item)
         self.list_widget.itemDoubleClicked.connect(self.play_selected_item)
         self.play_button.clicked.connect(self.toggle_playback)
+        self.restart_button.clicked.connect(self.restart_current_video)
+        self.rewind_button.clicked.connect(lambda: self.jump_relative(-15.0))
+        self.forward_button.clicked.connect(lambda: self.jump_relative(15.0))
         self.fullscreen_button.clicked.connect(self.toggle_player_fullscreen)
         self.complete_button.clicked.connect(self.mark_current_completed)
         self.subtitle_placeholder_button.clicked.connect(self.create_current_subtitle_placeholder)
@@ -816,7 +840,14 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.load_subtitles(record)
         self.update_position_label(record.last_position_sec, record.duration_sec)
         self.refresh_detail_box()
-        self.status_label.setText(f"已選取：{record.video_name}")
+        if record.last_position_sec > 0 and record.status != LessonStatus.COMPLETED:
+            self.status_label.setText(f"已選取：{record.video_name}，播放會接續 {format_seconds(record.last_position_sec)}")
+            self.playback_hint_label.setText(
+                f"目前會從 {format_seconds(record.last_position_sec)} 接續播放；也可以按「從頭播放」。"
+            )
+        else:
+            self.status_label.setText(f"已選取：{record.video_name}")
+            self.playback_hint_label.setText("按播放開始；時間軸可點擊或拖曳。")
         self.log(f"loaded video ref: {record.video_name}")
 
     def load_subtitles(self, record: PlaybackRecord) -> None:
@@ -988,6 +1019,39 @@ class M1MakeupPlayerWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - UI boundary reports playback failure.
             self.log(f"play selected failed: {exc}")
 
+    def restart_current_video(self) -> None:
+        if self.current_record is None or not self.playback_core.available():
+            return
+        try:
+            self.pending_seek_sec = None
+            self.pending_seek_key = None
+            self.playback_core.seek(0.0)
+            self.playback_core.play()
+            self.update_position_label(0.0, self.current_record.duration_sec)
+            self.current_record.update_position(0.0, self.current_record.duration_sec)
+            self.store.records[self.current_record.stable_key] = self.current_record
+            self.store.save()
+            self.refresh_current_item_text()
+            self.refresh_detail_box()
+            self.status_label.setText("已從頭播放")
+            self.playback_hint_label.setText("目前從 00:00 播放；時間軸可點擊或拖曳。")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"restart playback failed: {exc}")
+
+    def jump_relative(self, delta_sec: float) -> None:
+        if self.current_record is None or not self.playback_core.available():
+            return
+        current = self.current_playback_position_for_subtitles()
+        duration = self.current_record.duration_sec
+        try:
+            duration = self.playback_core.duration_sec() or duration
+        except Exception:
+            pass
+        target = max(0.0, current + float(delta_sec))
+        if duration and duration > 0:
+            target = min(float(duration), target)
+        self.seek_to_slider(int(target))
+
     def maybe_start_timeline_subtitle_generation(self) -> None:
         if self.current_record is None:
             return
@@ -1083,6 +1147,9 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.subtitle_title,
             self.active_subtitle_label,
             self.subtitle_box,
+            self.playback_hint_label,
+            self.complete_button,
+            self.flush_writeback_button,
         ):
             widget.setHidden(enabled)
         self.fullscreen_button.setText("離開全螢幕" if enabled else "全螢幕")

@@ -134,7 +134,7 @@ def main() -> int:
             ),
             local_settings_path=str(temp / "local_settings.json"),
         )
-        assert window.windowTitle() == "m_1 Notion 補課播放器"
+        assert window.windowTitle() == "BDDE38補課系統 by RRK"
         assert fake_core.window_ids
         assert fake_core.window_ids[0] > 0
         assert window.sync_button.text() == "重新同步"
@@ -143,7 +143,10 @@ def main() -> int:
         assert window.set_token_button.text() == "設定 token"
         assert window.set_completion_source_button.text() == "設定完成庫"
         assert window.set_schedule_view_button.text() == "設定課表"
-        assert window.play_button.text() == "播放 / 暫停"
+        assert window.play_button.text() == "播放"
+        assert window.restart_button.text() == "從頭"
+        assert window.rewind_button.text() == "-15"
+        assert window.forward_button.text() == "+15"
         assert window.fullscreen_button.text() == "全螢幕"
         assert window.complete_button.text() == "標記完成"
         assert window.subtitle_placeholder_button.text() == "建立字幕佔位"
@@ -245,12 +248,18 @@ def main() -> int:
         assert window.left_panel.isHidden()
         assert window.detail_box.isHidden()
         assert window.subtitle_box.isHidden()
+        assert window.playback_hint_label.isHidden()
+        assert window.complete_button.isHidden()
+        assert window.flush_writeback_button.isHidden()
         window.toggle_player_fullscreen()
         assert not window.player_fullscreen
         assert window.fullscreen_button.text() == "全螢幕"
         assert not window.left_panel.isHidden()
         assert not window.detail_box.isHidden()
         assert not window.subtitle_box.isHidden()
+        assert not window.playback_hint_label.isHidden()
+        assert not window.complete_button.isHidden()
+        assert not window.flush_writeback_button.isHidden()
         window.on_subtitle_generation_progress("audio_decode_start", 5, "讀取遠端音訊串流")
         assert not window.subtitle_progress_label.isHidden()
         assert window.subtitle_progress_bar.value() == 5
@@ -273,6 +282,10 @@ def main() -> int:
         window.seek_to_slider(60)
         assert fake_core.seeked_to == 60.0
         assert window.position_time_label.text() == "01:00 / 02:00"
+        window.jump_relative(-15)
+        assert fake_core.seeked_to == 45.0
+        window.jump_relative(15)
+        assert fake_core.seeked_to == 60.0
         detail_text = window.detail_box.toPlainText()
         assert "影片：test-video.mp4" in detail_text
         assert "播放狀態：ready" in detail_text
@@ -314,7 +327,12 @@ def main() -> int:
         assert timeline_triggers[0]["start_sec"] == 55.0
         assert timeline_triggers[0]["max_duration_sec"] == 180.0
         assert timeline_triggers[0]["overwrite"] is True
+        assert "speed" not in timeline_triggers[0]
         assert fake_core.toggle_count == 1
+        window.restart_current_video()
+        assert fake_core.seeked_to == 0.0
+        assert fake_core.play_count == 2
+        assert window.position_time_label.text() == "00:00 / 02:00"
 
         window.mark_current_completed()
         assert window.current_record is not None
