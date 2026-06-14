@@ -219,7 +219,7 @@ D:\RRKAL_tools\m1-makeup-player\.venv\Scripts\python.exe D:\RRKAL_tools\m1-makeu
 
 `writeback_apply_smoke.py --apply` 會建立一筆 synthetic 完成紀錄，成功後預設立刻用 Notion `in_trash` 收進垃圾桶，避免測試列留在補課完成紀錄庫。若要保留測試列，可加 `--keep`。
 
-啟動後會自動同步 Notion 課程安排。左側是補課總覽、課程影片列表、重新同步、重新檢查與 API 設定入口，右側上方是嵌入式播放器、下方是控制列與字幕提詞。控制列包含「標記完成」與「送出完成紀錄」；前者只排入本地 outbox，後者才嘗試把 outbox 送到 Notion。「待送出完成紀錄」顯示的是本地 outbox 筆數，不代表已寫入 Notion。內部事件紀錄仍保留給診斷與測試，但一般版主畫面預設不顯示。
+啟動後會自動同步 Notion 課程安排。左側是補課總覽、課程影片列表、重新同步、重新檢查與 API 設定入口，右側上方是嵌入式播放器、下方是控制列與字幕提詞。控制列包含「播放 / 暫停」、倍速選單、`CC` 字幕開關、「標記完成」與「送出完成紀錄」；前者只排入本地 outbox，後者才嘗試把 outbox 送到 Notion。「待送出完成紀錄」顯示的是本地 outbox 筆數，不代表已寫入 Notion。內部事件紀錄仍保留給診斷與測試，但一般版主畫面預設不顯示。
 
 「重新檢查」會同時寫入 preflight 與 MVP readiness gates 到事件紀錄。若 Notion token 或完成紀錄 data source 尚未設定，UI 會顯示外部設定未完成，而不是把它當成本地播放核心錯誤。若本地字幕尚未準備，readiness 會列為字幕 warning，影片播放仍可繼續。
 
@@ -249,7 +249,9 @@ $env:PYTHONUTF8='1'
 - 影片接近完成門檻時會自動排入完成 outbox。
 - 也可以按「標記完成」手動排入完成 outbox，用於補登或播放器未能取得完整 duration 的情況。
 
-倍速播放只應改變時間軸，不應改變人聲音高。播放器啟動 mpv 時會明確帶入 `--audio-pitch-correction=yes`，避免高倍速時出現娃娃音。
+倍速播放只應改變時間軸，不應改變人聲音高。播放器啟動 mpv 時會明確帶入 `--audio-pitch-correction=yes`，避免高倍速時出現娃娃音。主畫面倍速選單提供 `0.5x` 到 `8x`，選取後會即時套用到 mpv 的 `speed` property。
+
+影片窗格支援雙擊切換全螢幕。若目前影片有 `.srt`、`.vtt`、`.ass` 或 `.ssa` sidecar，播放器會同步載入為 mpv 字幕軌，讓全螢幕時也能顯示類 YouTube CC 的畫面字幕；主畫面 `CC` 按鈕會切換 mpv `sub-visibility`。Markdown 逐字稿仍顯示在下方提詞列表，不強行轉成 mpv 字幕軌。
 
 ## 字幕
 

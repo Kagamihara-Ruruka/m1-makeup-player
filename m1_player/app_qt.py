@@ -4,6 +4,7 @@ import os
 import sys
 
 from dataclasses import replace
+from pathlib import Path
 
 from .config import AppConfig
 from .attachment_resolver import AttachmentResolution, NotionAttachmentResolver
@@ -42,6 +43,7 @@ try:
     from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
     from PySide6.QtWidgets import (
         QApplication,
+        QComboBox,
         QDialog,
         QHBoxLayout,
         QInputDialog,
@@ -63,6 +65,14 @@ except ImportError as exc:  # pragma: no cover - exercised only without optional
         "D:\\RRKAL_tools\\m1-makeup-player\\.venv\\Scripts\\python.exe "
         "-m pip install -r D:\\RRKAL_tools\\m1-makeup-player\\requirements.txt"
     ) from exc
+
+
+class PlayerSurface(QLabel):
+    double_clicked = Signal()
+
+    def mouseDoubleClickEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 class SyncWorker(QObject):
@@ -251,7 +261,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.current_resolution: AttachmentResolution | None = None
         self.current_playability: PlayabilityStatus | None = None
         self.current_subtitle_path = None
+        self.current_mpv_subtitle_path: str | None = None
         self.cues: list[SubtitleCue] = []
+        self.player_fullscreen = False
         self.pending_seek_sec: float | None = None
         self.pending_seek_key: str | None = None
         self.sync_thread: QThread | None = None
@@ -286,6 +298,14 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_generate_button = QPushButton("生成字幕")
         self.subtitle_generate_button.setHidden(True)
         self.flush_writeback_button = QPushButton("送出完成紀錄")
+        self.speed_combo = QComboBox()
+        for label, speed in playback_speed_options():
+            self.speed_combo.addItem(label, speed)
+        self.speed_combo.setCurrentIndex(2)
+        self.cc_button = QPushButton("CC 開")
+        self.cc_button.setCheckable(True)
+        self.cc_button.setChecked(True)
+        self.cc_button.setEnabled(False)
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 0)
         self.active_subtitle_label = QLabel("尚未載入字幕")
@@ -300,7 +320,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.writeback_summary_box = QTextEdit()
         self.writeback_summary_box.setReadOnly(True)
         self.writeback_summary_box.setMaximumHeight(110)
-        self.player_label = QLabel("播放器待命")
+        self.player_label = PlayerSurface("播放器待命")
         self.player_label.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.player_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_label.setMinimumHeight(260)
@@ -359,6 +379,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.addWidget(self.play_button)
+        controls_layout.addWidget(QLabel("倍速"))
+        controls_layout.addWidget(self.speed_combo)
+        controls_layout.addWidget(self.cc_button)
         controls_layout.addWidget(self.complete_button)
         controls_layout.addWidget(self.subtitle_placeholder_button)
         controls_layout.addWidget(self.subtitle_generate_button)
@@ -390,6 +413,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_placeholder_button.clicked.connect(self.create_current_subtitle_placeholder)
         self.subtitle_generate_button.clicked.connect(self.start_subtitle_generation)
         self.flush_writeback_button.clicked.connect(self.start_writeback_flush)
+        self.speed_combo.currentIndexChanged.connect(self.change_playback_speed)
+        self.cc_button.toggled.connect(self.change_subtitle_visibility)
+        self.player_label.double_clicked.connect(self.toggle_player_fullscreen)
         self.position_slider.sliderMoved.connect(self.seek_to_slider)
         self.subtitle_box.itemDoubleClicked.connect(self.seek_to_subtitle_item)
         self.position_timer.timeout.connect(self.poll_playback_position)
@@ -650,6 +676,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.current_playability = playability
         if playability.can_play and playability.playable_url:
             self.playback_core.load(playability.playable_url)
+            self.apply_playback_speed()
             if record.last_position_sec > 0 and record.status != LessonStatus.COMPLETED:
                 self.pending_seek_sec = record.last_position_sec
                 self.pending_seek_key = record.stable_key
@@ -668,6 +695,8 @@ class M1MakeupPlayerWindow(QMainWindow):
     def load_subtitles(self, record: PlaybackRecord) -> None:
         path, self.cues = self.subtitle_resolver.load_for(record)
         self.current_subtitle_path = path
+        self.current_mpv_subtitle_path = None
+        self.cc_button.setEnabled(False)
         self.subtitle_box.clear()
         if not self.cues:
             self.active_subtitle_label.setText("尚未載入字幕")
@@ -675,6 +704,10 @@ class M1MakeupPlayerWindow(QMainWindow):
             return
         if path:
             record.subtitle_path = str(path)
+            if is_mpv_subtitle_path(path):
+                self.current_mpv_subtitle_path = str(path)
+                self.cc_button.setEnabled(True)
+                self.load_mpv_subtitle_track()
         self.active_subtitle_label.setText("等待播放位置")
         for cue in self.cues:
             item = QListWidgetItem(f"{format_seconds(cue.start_sec)}  {cue.text}")
@@ -798,6 +831,55 @@ class M1MakeupPlayerWindow(QMainWindow):
         if isinstance(start_sec, float):
             self.seek_to_slider(int(start_sec))
 
+    def selected_playback_speed(self) -> float:
+        value = self.speed_combo.currentData()
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 1.0
+
+    def change_playback_speed(self, *_args: object) -> None:
+        if not self.playback_core.available():
+            return
+        self.apply_playback_speed()
+
+    def apply_playback_speed(self) -> None:
+        try:
+            self.playback_core.set_speed(self.selected_playback_speed())
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"playback speed change failed: {exc}")
+
+    def toggle_player_fullscreen(self) -> None:
+        self.player_fullscreen = not self.player_fullscreen
+        set_fullscreen = getattr(self.playback_core, "set_fullscreen", None)
+        if callable(set_fullscreen) and self.playback_core.available():
+            try:
+                set_fullscreen(self.player_fullscreen)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"mpv fullscreen toggle failed: {exc}")
+        if self.player_fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    def load_mpv_subtitle_track(self) -> None:
+        if not self.current_mpv_subtitle_path or not self.playback_core.available():
+            return
+        try:
+            self.playback_core.load_subtitle(self.current_mpv_subtitle_path)
+            self.playback_core.set_subtitle_visible(self.cc_button.isChecked())
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"mpv subtitle track load failed: {exc}")
+
+    def change_subtitle_visibility(self, *_args: object) -> None:
+        if not self.playback_core.available():
+            return
+        try:
+            self.playback_core.set_subtitle_visible(self.cc_button.isChecked())
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"subtitle visibility change failed: {exc}")
+
     def poll_playback_position(self) -> None:
         if self.current_record is None or not self.playback_core.available():
             return
@@ -910,6 +992,25 @@ def format_seconds(value: float) -> str:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def playback_speed_options() -> tuple[tuple[str, float], ...]:
+    return (
+        ("0.5x", 0.5),
+        ("0.75x", 0.75),
+        ("1x", 1.0),
+        ("1.25x", 1.25),
+        ("1.5x", 1.5),
+        ("2x", 2.0),
+        ("3x", 3.0),
+        ("4x", 4.0),
+        ("6x", 6.0),
+        ("8x", 8.0),
+    )
+
+
+def is_mpv_subtitle_path(path: object) -> bool:
+    return str(Path(str(path)).suffix).lower() in {".srt", ".vtt", ".ass", ".ssa"}
 
 
 def subtitle_cues_need_generation(cues: list[SubtitleCue]) -> bool:

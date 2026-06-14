@@ -33,6 +33,18 @@ class PlaybackCore(Protocol):
     def seek(self, position_sec: float) -> None:
         ...
 
+    def set_speed(self, speed: float) -> None:
+        ...
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        ...
+
+    def load_subtitle(self, subtitle_path: str) -> None:
+        ...
+
+    def set_subtitle_visible(self, enabled: bool) -> None:
+        ...
+
     def position_sec(self) -> float | None:
         ...
 
@@ -91,6 +103,18 @@ class MissingPlaybackCore:
         raise RuntimeError(self.reason)
 
     def seek(self, position_sec: float) -> None:
+        raise RuntimeError(self.reason)
+
+    def set_speed(self, speed: float) -> None:
+        raise RuntimeError(self.reason)
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        raise RuntimeError(self.reason)
+
+    def load_subtitle(self, subtitle_path: str) -> None:
+        raise RuntimeError(self.reason)
+
+    def set_subtitle_visible(self, enabled: bool) -> None:
         raise RuntimeError(self.reason)
 
     def position_sec(self) -> float | None:
@@ -161,6 +185,21 @@ class MpvIpcPlaybackCore:
     def seek(self, position_sec: float) -> None:
         self.command(["seek", max(0.0, float(position_sec)), "absolute"])
 
+    def set_speed(self, speed: float) -> None:
+        self.set_property("speed", clamp_playback_speed(speed))
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        self.set_property("fullscreen", bool(enabled))
+
+    def load_subtitle(self, subtitle_path: str) -> None:
+        path = Path(subtitle_path)
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        self.command(["sub-add", str(path), "select"])
+
+    def set_subtitle_visible(self, enabled: bool) -> None:
+        self.set_property("sub-visibility", bool(enabled))
+
     def position_sec(self) -> float | None:
         return _as_float(self.get_property("time-pos"))
 
@@ -227,6 +266,14 @@ def create_default_playback_core() -> PlaybackCore:
     if not availability.available or not availability.mpv_path:
         return MissingPlaybackCore("找不到 mpv.exe。請安裝 mpv，或設定 M1_MPV_PATH 指向 mpv.exe。")
     return MpvIpcPlaybackCore(availability.mpv_path)
+
+
+def clamp_playback_speed(speed: float) -> float:
+    try:
+        value = float(speed)
+    except (TypeError, ValueError):
+        value = 1.0
+    return min(8.0, max(0.25, value))
 
 
 def _as_float(value: Any) -> float | None:

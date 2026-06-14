@@ -33,6 +33,11 @@ class FakePlaybackCore:
         self.duration = 120.0
         self.toggle_count = 0
         self.window_ids: list[int] = []
+        self.speed = 1.0
+        self.speed_calls: list[float] = []
+        self.fullscreen_calls: list[bool] = []
+        self.subtitle_paths: list[str] = []
+        self.subtitle_visibility_calls: list[bool] = []
 
     def available(self) -> bool:
         return True
@@ -60,6 +65,19 @@ class FakePlaybackCore:
     def seek(self, position_sec: float) -> None:
         self.seeked_to = float(position_sec)
         self.position = float(position_sec)
+
+    def set_speed(self, speed: float) -> None:
+        self.speed = float(speed)
+        self.speed_calls.append(float(speed))
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        self.fullscreen_calls.append(bool(enabled))
+
+    def load_subtitle(self, subtitle_path: str) -> None:
+        self.subtitle_paths.append(str(subtitle_path))
+
+    def set_subtitle_visible(self, enabled: bool) -> None:
+        self.subtitle_visibility_calls.append(bool(enabled))
 
     def position_sec(self) -> float | None:
         return self.position
@@ -122,6 +140,8 @@ def main() -> int:
         assert window.complete_button.text() == "標記完成"
         assert window.subtitle_placeholder_button.text() == "建立字幕佔位"
         assert window.subtitle_placeholder_button.isHidden()
+        assert window.speed_combo.currentText() == "1x"
+        assert window.speed_combo.findData(8.0) >= 0
         assert window.subtitle_generate_button.text() == "生成字幕"
         assert window.subtitle_generate_button.isHidden()
         assert window.flush_writeback_button.text() == "送出完成紀錄"
@@ -188,11 +208,28 @@ def main() -> int:
             last_position_sec=42.0,
             status=LessonStatus.IN_PROGRESS,
         )
+        (config.subtitle_dir / "course-a_001_test.srt").parent.mkdir(parents=True, exist_ok=True)
+        (config.subtitle_dir / "course-a_001_test.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\nhello cc\n",
+            encoding="utf-8",
+        )
         window.store.records[record.stable_key] = record
         window.records = [record]
         window.refresh_list()
         window.list_widget.setCurrentRow(0)
         assert fake_core.loaded_url == "https://example.com/test-video.mp4"
+        assert fake_core.subtitle_paths[-1].endswith("course-a_001_test.srt")
+        assert fake_core.subtitle_visibility_calls[-1] is True
+        assert window.cc_button.isEnabled()
+        window.cc_button.setChecked(False)
+        assert fake_core.subtitle_visibility_calls[-1] is False
+        assert fake_core.speed_calls[-1] == 1.0
+        window.speed_combo.setCurrentIndex(window.speed_combo.findData(8.0))
+        assert fake_core.speed == 8.0
+        window.toggle_player_fullscreen()
+        assert fake_core.fullscreen_calls[-1] is True
+        window.toggle_player_fullscreen()
+        assert fake_core.fullscreen_calls[-1] is False
         assert window.pending_seek_sec == 42.0
         window.poll_playback_position()
         assert fake_core.seeked_to == 42.0
@@ -201,11 +238,17 @@ def main() -> int:
         assert "影片：test-video.mp4" in detail_text
         assert "播放狀態：ready" in detail_text
         assert "播放進度：00:42 / 02:00（35.00%）" in detail_text
-        assert "字幕：缺少本地字幕" in detail_text
+        assert "字幕：course-a_001_test.srt（1 cues）" in detail_text
         overview_text = window.progress_overview_box.toPlainText()
         assert "影片總數：1" in overview_text
         assert "補課中：1" in overview_text
         assert "平均進度：35.00%" in overview_text
+        (config.subtitle_dir / "course-a_001_test.srt").unlink()
+        record.subtitle_path = ""
+        window.current_record.subtitle_path = ""
+        window.load_subtitles(window.current_record)
+        window.refresh_detail_box()
+        assert not window.cc_button.isEnabled()
         window.create_current_subtitle_placeholder()
         placeholder_path = config.subtitle_dir / "course-a_001_test.md"
         assert placeholder_path.exists()
