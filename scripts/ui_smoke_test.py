@@ -164,6 +164,7 @@ def main() -> int:
         assert window.position_time_label.text() == "00:00 / --:--"
         assert window.subtitle_box is not None
         assert window.active_subtitle_label.text() == "尚未載入字幕"
+        assert window.caption_overlay.isHidden()
         assert window.detail_box.toPlainText() == "尚未選取影片"
         assert window.list_widget is not None
         assert window.log_box.isHidden()
@@ -234,6 +235,7 @@ def main() -> int:
         assert window.cc_button.isEnabled()
         window.cc_button.setChecked(False)
         assert fake_core.subtitle_visibility_calls[-1] is False
+        assert window.caption_overlay.isHidden()
         assert fake_core.speed_calls[-1] == 1.0
         window.speed_combo.setCurrentIndex(window.speed_combo.findData(8.0))
         assert fake_core.speed == 8.0
@@ -253,6 +255,11 @@ def main() -> int:
         assert not window.subtitle_progress_label.isHidden()
         assert window.subtitle_progress_bar.value() == 5
         assert "讀取遠端音訊串流" in window.subtitle_progress_label.text()
+        assert window.caption_overlay.isHidden()
+        window.cc_button.setChecked(True)
+        window.on_subtitle_generation_progress("audio_decode_start", 5, "讀取遠端音訊串流")
+        assert not window.caption_overlay.isHidden()
+        assert "CC 準備中" in window.caption_overlay.text()
         window.on_subtitle_generation_progress("inference_segment", -1, "字幕解析中")
         assert window.subtitle_progress_bar.minimum() == 0
         assert window.subtitle_progress_bar.maximum() == 0
@@ -290,6 +297,7 @@ def main() -> int:
         assert "字幕：course-a_001_test.md（1 cues）" in window.detail_box.toPlainText()
         window.highlight_subtitle(0.0)
         assert window.active_subtitle_label.text() == "待補字幕"
+        assert window.caption_overlay.text() == "待補字幕"
         assert subtitle_cues_need_generation(window.cues)
         assert window.current_playback_position_for_subtitles() == 60.0
         assert window.current_playability is not None

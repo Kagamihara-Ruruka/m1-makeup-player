@@ -85,6 +85,25 @@ class PlayerDoubleClickOverlay(QWidget):
             accept()
 
 
+class PlayerCaptionOverlay(QLabel):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setWordWrap(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet(
+            "QLabel {"
+            "background: rgba(0, 0, 0, 180);"
+            "color: white;"
+            "border-radius: 6px;"
+            "padding: 8px 14px;"
+            "font-size: 22px;"
+            "font-weight: 600;"
+            "}"
+        )
+        self.setHidden(True)
+
+
 class PlayerSurface(QLabel):
     double_clicked = Signal()
 
@@ -94,6 +113,13 @@ class PlayerSurface(QLabel):
 
     def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
         super().resizeEvent(event)
+        for child in self.findChildren(PlayerCaptionOverlay):
+            width = max(260, self.width() - 96)
+            height = min(150, max(58, int(self.height() * 0.2)))
+            x_pos = max(12, int((self.width() - width) / 2))
+            y_pos = max(12, self.height() - height - 34)
+            child.setGeometry(x_pos, y_pos, width, height)
+            child.raise_()
         for child in self.findChildren(PlayerDoubleClickOverlay):
             child.setGeometry(self.rect())
             child.raise_()
@@ -392,6 +418,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.player_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_label.setMinimumHeight(260)
         self.player_label.setStyleSheet("border: 1px solid #555; background: #111; color: #ddd;")
+        self.caption_overlay = PlayerCaptionOverlay(self.player_label)
         self.player_click_overlay = PlayerDoubleClickOverlay(self.player_label)
         self.detail_box = QTextEdit()
         self.detail_box.setReadOnly(True)
@@ -480,6 +507,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         splitter.setSizes([360, 920])
         self.setCentralWidget(splitter)
         self.player_click_overlay.setGeometry(self.player_label.rect())
+        self.position_caption_overlay()
         self.player_click_overlay.raise_()
 
     def _connect_signals(self) -> None:
@@ -884,6 +912,7 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.subtitle_progress_bar.setRange(0, 100)
             self.subtitle_progress_bar.setValue(percent)
         self.subtitle_progress_label.setText(f"字幕解析：{message}")
+        self.show_caption_overlay(f"CC 準備中\n{message}")
         if stage != "inference_segment":
             self.status_label.setText(f"字幕解析：{message}")
 
@@ -904,6 +933,7 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.load_subtitles(self.current_record)
             self.refresh_detail_box()
             self.status_label.setText("字幕已生成並載入")
+            self.highlight_subtitle(self.current_playback_position_for_subtitles())
         else:
             self.status_label.setText("字幕已生成，重新選取影片後載入")
         self.subtitle_progress_label.setHidden(False)
@@ -921,6 +951,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.subtitle_progress_bar.setRange(0, 100)
         self.subtitle_progress_bar.setValue(0)
         self.subtitle_progress_label.setText("字幕解析：失敗")
+        self.show_caption_overlay("CC 解析失敗")
         self.log(f"subtitle generation failed: {message}")
 
     @Slot()
@@ -1053,6 +1084,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         else:
             self.showNormal()
         self.player_click_overlay.setGeometry(self.player_label.rect())
+        self.position_caption_overlay()
         self.player_click_overlay.raise_()
 
     def exit_player_fullscreen(self) -> None:
@@ -1069,12 +1101,16 @@ class M1MakeupPlayerWindow(QMainWindow):
             self.log(f"mpv subtitle track load failed: {exc}")
 
     def change_subtitle_visibility(self, *_args: object) -> None:
-        if not self.playback_core.available():
-            return
-        try:
-            self.playback_core.set_subtitle_visible(self.cc_button.isChecked())
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"subtitle visibility change failed: {exc}")
+        enabled = self.cc_button.isChecked()
+        if self.playback_core.available():
+            try:
+                self.playback_core.set_subtitle_visible(enabled)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"subtitle visibility change failed: {exc}")
+        if enabled:
+            self.highlight_subtitle(self.current_playback_position_for_subtitles())
+        else:
+            self.hide_caption_overlay()
 
     def poll_playback_position(self) -> None:
         if self.current_record is None or not self.playback_core.available():
@@ -1128,11 +1164,38 @@ class M1MakeupPlayerWindow(QMainWindow):
     def highlight_subtitle(self, position_sec: float) -> None:
         cue = active_cue(self.cues, position_sec)
         if cue is None:
+            if self.subtitle_generation_thread is None:
+                self.hide_caption_overlay()
             return
         self.active_subtitle_label.setText(cue.text)
+        self.show_caption_overlay(cue.text)
         row = max(0, cue.index - 1)
         if row < self.subtitle_box.count() and self.subtitle_box.currentRow() != row:
             self.subtitle_box.setCurrentRow(row)
+
+    def show_caption_overlay(self, text: str) -> None:
+        if not self.cc_button.isChecked():
+            self.hide_caption_overlay()
+            return
+        value = text.strip()
+        if not value:
+            self.hide_caption_overlay()
+            return
+        self.caption_overlay.setText(value)
+        self.position_caption_overlay()
+        self.caption_overlay.setHidden(False)
+        self.caption_overlay.raise_()
+        self.player_click_overlay.raise_()
+
+    def hide_caption_overlay(self) -> None:
+        self.caption_overlay.setHidden(True)
+
+    def position_caption_overlay(self) -> None:
+        width = max(260, self.player_label.width() - 96)
+        height = min(150, max(58, int(self.player_label.height() * 0.2)))
+        x_pos = max(12, int((self.player_label.width() - width) / 2))
+        y_pos = max(12, self.player_label.height() - height - 34)
+        self.caption_overlay.setGeometry(x_pos, y_pos, width, height)
 
     def mark_current_completed(self) -> None:
         if self.current_record is None:
