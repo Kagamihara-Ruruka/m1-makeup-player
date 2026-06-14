@@ -99,6 +99,27 @@ class PlayerSurface(QLabel):
             child.raise_()
 
 
+class SeekSlider(QSlider):
+    seek_requested = Signal(int)
+
+    def mousePressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name.
+        button = getattr(event, "button", lambda: None)()
+        if button == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            point = getattr(event, "position", lambda: None)()
+            if point is None:
+                point = getattr(event, "pos", lambda: None)()
+            x_value = float(point.x()) if point is not None else 0.0
+            ratio = max(0.0, min(1.0, x_value / max(1, self.width())))
+            value = int(round(self.minimum() + ratio * (self.maximum() - self.minimum())))
+            self.setValue(value)
+            self.seek_requested.emit(value)
+            accept = getattr(event, "accept", None)
+            if callable(accept):
+                accept()
+            return
+        super().mousePressEvent(event)
+
+
 class SyncWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
@@ -350,8 +371,10 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.cc_button.setCheckable(True)
         self.cc_button.setChecked(True)
         self.cc_button.setEnabled(False)
-        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider = SeekSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 0)
+        self.position_time_label = QLabel("00:00 / --:--")
+        self.position_time_label.setMinimumWidth(110)
         self.active_subtitle_label = QLabel("尚未載入字幕")
         self.active_subtitle_label.setWordWrap(True)
         self.active_subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -421,7 +444,12 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.detail_title = QLabel("目前影片狀態")
         right_layout.addWidget(self.detail_title)
         right_layout.addWidget(self.detail_box)
-        right_layout.addWidget(self.position_slider)
+        position_row = QWidget()
+        position_layout = QHBoxLayout(position_row)
+        position_layout.setContentsMargins(0, 0, 0, 0)
+        position_layout.addWidget(self.position_slider, 1)
+        position_layout.addWidget(self.position_time_label)
+        right_layout.addWidget(position_row)
         controls = QWidget()
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -473,7 +501,9 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.cc_button.toggled.connect(self.change_subtitle_visibility)
         self.player_label.double_clicked.connect(self.toggle_player_fullscreen)
         self.player_click_overlay.double_clicked.connect(self.toggle_player_fullscreen)
+        self.position_slider.seek_requested.connect(self.seek_to_slider)
         self.position_slider.sliderMoved.connect(self.seek_to_slider)
+        self.position_slider.sliderReleased.connect(self.seek_to_current_slider)
         self.subtitle_box.itemDoubleClicked.connect(self.seek_to_subtitle_item)
         self.position_timer.timeout.connect(self.poll_playback_position)
         self.fullscreen_shortcut = QShortcut(QKeySequence("F"), self)
@@ -749,6 +779,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         for log_line in playability.log_lines:
             self.log(log_line)
         self.load_subtitles(record)
+        self.update_position_label(record.last_position_sec, record.duration_sec)
         self.refresh_detail_box()
         self.status_label.setText(f"已選取：{record.video_name}")
         self.log(f"loaded video ref: {record.video_name}")
@@ -924,8 +955,17 @@ class M1MakeupPlayerWindow(QMainWindow):
             return
         try:
             self.playback_core.seek(float(value))
+            duration_sec = self.current_record.duration_sec if self.current_record is not None else None
+            try:
+                duration_sec = self.playback_core.duration_sec() or duration_sec
+            except Exception:
+                pass
+            self.update_position_label(float(value), duration_sec)
         except Exception as exc:  # noqa: BLE001
             self.log(f"seek failed: {exc}")
+
+    def seek_to_current_slider(self) -> None:
+        self.seek_to_slider(self.position_slider.value())
 
     def seek_to_subtitle_item(self, item: QListWidgetItem) -> None:
         start_sec = item.data(Qt.ItemDataRole.UserRole)
@@ -1030,6 +1070,7 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.position_slider.blockSignals(True)
         self.position_slider.setValue(int(position_sec))
         self.position_slider.blockSignals(False)
+        self.update_position_label(position_sec, duration_sec)
         self.current_record.update_position(position_sec, duration_sec)
         self.highlight_subtitle(position_sec)
         if self.current_record.should_complete(position_sec, duration_sec, self.config.completion_threshold):
@@ -1038,6 +1079,11 @@ class M1MakeupPlayerWindow(QMainWindow):
         self.refresh_current_item_text()
         self.refresh_detail_box()
         self.refresh_progress_overview()
+
+    def update_position_label(self, position_sec: float | None, duration_sec: float | None) -> None:
+        position_text = format_seconds(position_sec or 0.0)
+        duration_text = format_seconds(duration_sec) if duration_sec and duration_sec > 0 else "--:--"
+        self.position_time_label.setText(f"{position_text} / {duration_text}")
 
     def highlight_subtitle(self, position_sec: float) -> None:
         cue = active_cue(self.cues, position_sec)

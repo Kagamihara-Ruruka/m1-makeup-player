@@ -156,6 +156,7 @@ def main() -> int:
         assert "影片總數：0" in window.progress_overview_box.toPlainText()
         assert "待回寫完成紀錄：0" in window.progress_overview_box.toPlainText()
         assert window.pending_seek_sec is None
+        assert window.position_time_label.text() == "00:00 / --:--"
         assert window.subtitle_box is not None
         assert window.active_subtitle_label.text() == "尚未載入字幕"
         assert window.detail_box.toPlainText() == "尚未選取影片"
@@ -256,6 +257,10 @@ def main() -> int:
         window.poll_playback_position()
         assert fake_core.seeked_to == 42.0
         assert window.pending_seek_sec is None
+        assert window.position_time_label.text() == "00:42 / 02:00"
+        window.seek_to_slider(60)
+        assert fake_core.seeked_to == 60.0
+        assert window.position_time_label.text() == "01:00 / 02:00"
         detail_text = window.detail_box.toPlainText()
         assert "影片：test-video.mp4" in detail_text
         assert "播放狀態：ready" in detail_text
